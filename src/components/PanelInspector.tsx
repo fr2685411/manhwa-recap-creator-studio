@@ -25,7 +25,11 @@ import {
   SlidersHorizontal,
   Sun,
   Contrast,
-  ListOrdered
+  ListOrdered,
+  Maximize2,
+  Minimize2,
+  Download,
+  ExternalLink
 } from 'lucide-react';
 import { 
   Panel, 
@@ -43,12 +47,18 @@ import { audioEngine } from '../services/audioEngine';
 import { requestTtsAudio, speakBrowserVoice } from '../services/geminiClient';
 import { localAiEngine } from '../services/localAiEngine';
 
+export type InspectorTabType = 'script' | 'full-script' | 'voice' | 'camera' | 'sfx' | 'subtitles' | 'subtitle-settings';
+
 interface PanelInspectorProps {
   panel: Panel | undefined;
   panelIndex: number;
   project: ProjectSettings;
   onUpdatePanel: (updated: Panel) => void;
   onUpdateProject: (updater: (prev: ProjectSettings) => ProjectSettings) => void;
+  onSelectPanel?: (index: number) => void;
+  onSeek?: (time: number) => void;
+  activeTab?: InspectorTabType;
+  onTabChange?: (tab: InspectorTabType) => void;
 }
 
 export const PanelInspector: React.FC<PanelInspectorProps> = ({
@@ -57,11 +67,27 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
   project,
   onUpdatePanel,
   onUpdateProject,
+  onSelectPanel,
+  onSeek,
+  activeTab: controlledTab,
+  onTabChange,
 }) => {
   const [isGeneratingTts, setIsGeneratingTts] = useState(false);
   const [isPlayingAudition, setIsPlayingAudition] = useState(false);
-  const [activeTab, setActiveTab] = useState<'script' | 'voice' | 'camera' | 'sfx' | 'subtitles' | 'subtitle-settings'>('voice');
+  const [internalActiveTab, setInternalActiveTab] = useState<InspectorTabType>('voice');
+  const activeTab = controlledTab ?? internalActiveTab;
+  const setActiveTab = (tab: InspectorTabType) => {
+    setInternalActiveTab(tab);
+    onTabChange?.(tab);
+  };
+
   const [copiedAllStatus, setCopiedAllStatus] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [fullScriptMode, setFullScriptMode] = useState<'segmented' | 'continuous'>('segmented');
+  const [copiedScript, setCopiedScript] = useState(false);
+  const [isBatchVoicingAll, setIsBatchVoicingAll] = useState(false);
+  const [batchVoiceStatus, setBatchVoiceStatus] = useState('');
+  const [auditioningPanelId, setAuditioningPanelId] = useState<string | null>(null);
 
   // Subtitle style helper for current panel (falls back to project default)
   const currentSubtitleStyle: SubtitleStyle = {
@@ -103,6 +129,113 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
     }));
     setCopiedAllStatus(true);
     setTimeout(() => setCopiedAllStatus(false), 2000);
+  };
+
+  // Full script calculations across all panels
+  const fullScriptText = project.panels
+    .map(p => p.commentary.trim())
+    .filter(Boolean)
+    .join('\n\n');
+
+  const totalWords = fullScriptText.split(/\s+/).filter(Boolean).length;
+  const totalDuration = project.panels.reduce((sum, p) => sum + p.duration, 0);
+  const panelsWithVoice = project.panels.filter(p => p.commentary && p.audioBase64).length;
+  const totalCommentaryPanels = project.panels.filter(p => p.commentary).length;
+
+  const getPanelStartTime = (idx: number) => {
+    return project.panels.slice(0, idx).reduce((sum, p) => sum + p.duration, 0);
+  };
+
+  const formatPanelTime = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    const ms = Math.floor((sec % 1) * 10);
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms}`;
+  };
+
+  const handleCopyFullScript = () => {
+    navigator.clipboard.writeText(fullScriptText);
+    setCopiedScript(true);
+    setTimeout(() => setCopiedScript(false), 2000);
+  };
+
+  const handleExportScriptTxt = () => {
+    let content = `========================================================\n`;
+    content += `MANHWA RECAP STORY SCRIPT: ${project.title || 'Untitled'}\n`;
+    content += `Aspect Ratio: ${project.aspectRatio} | Voice Persona: ${project.voicePersona} | Panels: ${project.panels.length}\n`;
+    content += `Total Words: ${totalWords} | Estimated Duration: ~${totalDuration.toFixed(1)}s\n`;
+    content += `========================================================\n\n`;
+
+    project.panels.forEach((p, idx) => {
+      const startSec = getPanelStartTime(idx);
+      const endSec = startSec + p.duration;
+      content += `[PANEL ${idx + 1}] (${formatPanelTime(startSec)} - ${formatPanelTime(endSec)} | ${p.duration.toFixed(1)}s) - "${p.title}"\n`;
+      content += `${p.commentary || '(No commentary written yet)'}\n\n`;
+    });
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(project.title || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}_script.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleAuditionPanelVoice = async (targetPanel: Panel) => {
+    if (!targetPanel.commentary) return;
+    if (auditioningPanelId === targetPanel.id) {
+      audioEngine.stopVoice();
+      setAuditioningPanelId(null);
+      return;
+    }
+
+    setAuditioningPanelId(targetPanel.id);
+    if (targetPanel.audioBase64) {
+      try {
+        await audioEngine.playVoiceBase64(targetPanel.audioBase64, targetPanel.voiceSettings);
+      } catch (err) {
+        console.warn('Playback error:', err);
+      } finally {
+        setAuditioningPanelId(null);
+      }
+    } else {
+      speakBrowserVoice(targetPanel.commentary, () => {
+        setAuditioningPanelId(null);
+      });
+    }
+  };
+
+  const handleBatchVoiceAllPanels = async () => {
+    const unvoiced = project.panels.filter(p => p.commentary && !p.audioBase64);
+    if (unvoiced.length === 0) return;
+
+    setIsBatchVoicingAll(true);
+    let done = 0;
+    try {
+      const updatedPanels = [...project.panels];
+      for (let i = 0; i < updatedPanels.length; i++) {
+        const p = updatedPanels[i];
+        if (p.commentary && !p.audioBase64) {
+          done++;
+          setBatchVoiceStatus(`Synthesizing line ${done}/${unvoiced.length}...`);
+          try {
+            const persona = p.voiceSettings?.voicePersona || project.voicePersona || 'Puck';
+            const style = p.voiceSettings?.stylePrompt || 'Energetic comedic anime manhwa recap host speaking naturally to the audience';
+            const audioBase64 = await requestTtsAudio(p.commentary, persona, style);
+            updatedPanels[i] = { ...p, audioBase64 };
+            onUpdateProject(prev => ({ ...prev, panels: [...updatedPanels] }));
+          } catch (e) {
+            console.warn(`Voice synthesis failed for panel ${i + 1}:`, e);
+          }
+        }
+      }
+    } finally {
+      setIsBatchVoicingAll(false);
+      setBatchVoiceStatus('');
+    }
   };
 
   // Mic recording state
@@ -428,7 +561,7 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
   };
 
   return (
-    <div className="w-80 md:w-96 bg-[#0f0f17] border-l border-zinc-800 flex flex-col h-full overflow-hidden select-none z-10">
+    <div className={`${isExpanded ? 'w-80 md:w-[600px] lg:w-[680px]' : 'w-80 md:w-96'} bg-[#0f0f17] border-l border-zinc-800 flex flex-col h-full overflow-hidden select-none z-10 transition-all duration-200`}>
       {/* Panel Inspector Header */}
       <div className="p-3.5 bg-[#12121e] border-b border-zinc-800 flex items-center justify-between">
         <div>
@@ -445,10 +578,20 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
           </div>
         </div>
 
-        {/* Duration tweak badge */}
-        <div className="flex items-center gap-1 font-mono text-xs bg-zinc-900 px-2 py-1 rounded-lg border border-zinc-800 text-zinc-300">
-          <Clock className="w-3 h-3 text-amber-400" />
-          <span>{panel.duration.toFixed(1)}s</span>
+        {/* Duration tweak badge & expand toggle */}
+        <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1 font-mono text-xs bg-zinc-900 px-2 py-1 rounded-lg border border-zinc-800 text-zinc-300">
+            <Clock className="w-3 h-3 text-amber-400" />
+            <span>{panel.duration.toFixed(1)}s</span>
+          </div>
+
+          <button
+            onClick={() => setIsExpanded(!isExpanded)}
+            title={isExpanded ? 'Collapse inspector width' : 'Expand width for full script reading'}
+            className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white transition-all"
+          >
+            {isExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5 text-amber-400" />}
+          </button>
         </div>
       </div>
 
@@ -456,15 +599,31 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
       <div className="flex border-b border-zinc-800 bg-[#0c0c14] text-[11px] font-semibold overflow-x-auto no-scrollbar">
         <button
           onClick={() => setActiveTab('script')}
-          className={`flex-1 min-w-[54px] py-2.5 flex items-center justify-center gap-1 transition-all border-b-2 shrink-0 ${
+          className={`flex-1 min-w-[50px] py-2.5 flex items-center justify-center gap-1 transition-all border-b-2 shrink-0 ${
             activeTab === 'script'
               ? 'border-amber-400 text-amber-400 bg-amber-400/5'
               : 'border-transparent text-zinc-400 hover:text-white'
           }`}
-          title="Script & Commentary"
+          title="Current Panel Commentary"
         >
           <Flame className="w-3.5 h-3.5" />
-          <span>Script</span>
+          <span>Panel</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('full-script')}
+          className={`flex-1 min-w-[76px] py-2.5 flex items-center justify-center gap-1 transition-all border-b-2 relative shrink-0 ${
+            activeTab === 'full-script'
+              ? 'border-amber-400 text-amber-400 bg-amber-400/5'
+              : 'border-transparent text-zinc-400 hover:text-white'
+          }`}
+          title="Whole Story Voiceover Script (All Panels)"
+        >
+          <FileText className="w-3.5 h-3.5 text-amber-400" />
+          <span>Full Script</span>
+          <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1 rounded font-mono font-bold">
+            {project.panels.length}
+          </span>
         </button>
 
         <button
@@ -599,6 +758,318 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
                 Mamoru pacing: 4-6s per punchy panel keeps high viral viewer retention.
               </p>
             </div>
+
+            {/* Quick Link to Whole Story Script */}
+            <button
+              onClick={() => setActiveTab('full-script')}
+              className="w-full p-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 font-bold flex items-center justify-between text-xs transition-all"
+            >
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-amber-400" />
+                <span>View Whole Voiceover Story Script ({project.panels.length} Panels)</span>
+              </div>
+              <span className="text-[10px] bg-amber-400 text-black px-1.5 py-0.5 rounded font-black">
+                FULL SCRIPT
+              </span>
+            </button>
+          </div>
+        )}
+
+        {/* TAB: WHOLE STORY VOICEOVER SCRIPT (ACROSS ALL PANELS) */}
+        {activeTab === 'full-script' && (
+          <div className="space-y-4">
+            {/* 1. Script Analytics & Header Card */}
+            <div className="p-3.5 bg-zinc-900/90 rounded-2xl border border-zinc-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-zinc-200 text-xs flex items-center gap-1.5">
+                      <FileText className="w-4 h-4 text-amber-400" />
+                      Whole Voiceover Story Script
+                    </span>
+                    <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                      {project.panels.length} Panels
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                    Complete compiled comedic commentary and narrator lines for the entire recap
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-[11px] font-bold flex items-center gap-1 transition-all"
+                >
+                  {isExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5 text-amber-400" />}
+                  <span>{isExpanded ? 'Compact' : 'Expand'}</span>
+                </button>
+              </div>
+
+              {/* Stats Row */}
+              <div className="grid grid-cols-3 gap-2 pt-1 border-t border-zinc-800 text-center font-mono">
+                <div className="p-2 rounded-xl bg-zinc-950/70 border border-zinc-800/80">
+                  <div className="text-[10px] text-zinc-500 font-sans">Total Words</div>
+                  <div className="font-bold text-sm text-white">{totalWords}</div>
+                </div>
+
+                <div className="p-2 rounded-xl bg-zinc-950/70 border border-zinc-800/80">
+                  <div className="text-[10px] text-zinc-500 font-sans">Spoken Time</div>
+                  <div className="font-bold text-sm text-amber-400">~{Math.round(totalWords / 2.5)}s</div>
+                </div>
+
+                <div className="p-2 rounded-xl bg-zinc-950/70 border border-zinc-800/80">
+                  <div className="text-[10px] text-zinc-500 font-sans">Voiced Clips</div>
+                  <div className={`font-bold text-sm ${panelsWithVoice === totalCommentaryPanels && totalCommentaryPanels > 0 ? 'text-emerald-400' : 'text-zinc-300'}`}>
+                    {panelsWithVoice}/{totalCommentaryPanels}
+                  </div>
+                </div>
+              </div>
+
+              {/* Fast Action Buttons */}
+              <div className="flex items-center gap-2 pt-1 border-t border-zinc-800">
+                <button
+                  onClick={handleCopyFullScript}
+                  className={`flex-1 py-1.5 px-2 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all ${
+                    copiedScript
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700'
+                  }`}
+                >
+                  {copiedScript ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5 text-amber-400" />}
+                  <span>{copiedScript ? 'Copied Entire Script!' : 'Copy Script'}</span>
+                </button>
+
+                <button
+                  onClick={handleExportScriptTxt}
+                  className="py-1.5 px-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 text-[11px] font-bold flex items-center gap-1.5 transition-all"
+                  title="Download script as formatted .txt file"
+                >
+                  <Download className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Export .TXT</span>
+                </button>
+
+                {panelsWithVoice < totalCommentaryPanels && (
+                  <button
+                    onClick={handleBatchVoiceAllPanels}
+                    disabled={isBatchVoicingAll}
+                    className="py-1.5 px-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-sm shadow-blue-600/30"
+                    title="Synthesize AI voiceover for all unvoiced panels"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    <span>{isBatchVoicingAll ? 'Synthesizing...' : 'Voice All'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Batch voice progress notification */}
+              {batchVoiceStatus && (
+                <div className="p-2 rounded-xl bg-blue-950/40 border border-blue-800 text-blue-300 text-[11px] flex items-center gap-2 animate-pulse">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                  <span>{batchVoiceStatus}</span>
+                </div>
+              )}
+            </div>
+
+            {/* 2. View Mode Selector (Segmented Flow vs Continuous Teleprompter) */}
+            <div className="flex items-center gap-1.5 bg-zinc-900/90 p-1 rounded-xl border border-zinc-800">
+              <button
+                onClick={() => setFullScriptMode('segmented')}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  fullScriptMode === 'segmented'
+                    ? 'bg-amber-500 text-black shadow-sm'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Story Flow by Panel</span>
+              </button>
+
+              <button
+                onClick={() => setFullScriptMode('continuous')}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  fullScriptMode === 'continuous'
+                    ? 'bg-amber-500 text-black shadow-sm'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Continuous Teleprompter</span>
+              </button>
+            </div>
+
+            {/* 3A. MODE A: SEGMENTED STORY FLOW (PANEL BY PANEL SCRIPT EDITOR) */}
+            {fullScriptMode === 'segmented' && (
+              <div className="space-y-3">
+                {project.panels.map((p, idx) => {
+                  const startSec = getPanelStartTime(idx);
+                  const endSec = startSec + p.duration;
+                  const isCurrent = idx === panelIndex;
+                  const wordCount = p.commentary.trim().split(/\s+/).filter(Boolean).length;
+
+                  return (
+                    <div
+                      key={p.id}
+                      className={`p-3 rounded-2xl border transition-all ${
+                        isCurrent
+                          ? 'bg-[#151525] border-amber-500/60 shadow-lg shadow-black/60 ring-1 ring-amber-500/30'
+                          : 'bg-zinc-900/80 border-zinc-800 hover:border-zinc-700'
+                      }`}
+                    >
+                      {/* Panel Card Header */}
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          {/* Jump to panel button */}
+                          <button
+                            onClick={() => {
+                              onSelectPanel?.(idx);
+                              onSeek?.(startSec);
+                            }}
+                            className={`px-2 py-0.5 rounded text-[10px] font-black transition-all flex items-center gap-1 shrink-0 ${
+                              isCurrent
+                                ? 'bg-amber-400 text-black'
+                                : 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/30'
+                            }`}
+                            title="Jump to this panel in preview and timeline"
+                          >
+                            <span>#{idx + 1}</span>
+                            <ExternalLink className="w-2.5 h-2.5 opacity-80" />
+                          </button>
+
+                          {/* Mini Thumbnail */}
+                          {p.imageUrl && (
+                            <img
+                              src={p.imageUrl}
+                              alt={p.title}
+                              className="w-8 h-8 rounded object-cover border border-zinc-700 shrink-0 cursor-pointer"
+                              onClick={() => {
+                                onSelectPanel?.(idx);
+                                onSeek?.(startSec);
+                              }}
+                            />
+                          )}
+
+                          <span className="font-bold text-white text-xs truncate">
+                            {p.title}
+                          </span>
+                        </div>
+
+                        {/* Timing and Audition */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="text-[10px] text-zinc-400 font-mono hidden sm:inline">
+                            {formatPanelTime(startSec)} - {formatPanelTime(endSec)}
+                          </span>
+
+                          <button
+                            onClick={() => handleAuditionPanelVoice(p)}
+                            disabled={!p.commentary}
+                            className={`px-2 py-1 rounded-lg border text-[10px] font-bold flex items-center gap-1 transition-all disabled:opacity-40 ${
+                              auditioningPanelId === p.id
+                                ? 'bg-amber-400 text-black border-amber-300 animate-pulse'
+                                : p.audioBase64
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
+                                : 'bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700'
+                            }`}
+                            title={p.audioBase64 ? 'Play generated AI voice clip' : 'Audition voice using Web Speech'}
+                          >
+                            <Play className="w-3 h-3 fill-current" />
+                            <span>{auditioningPanelId === p.id ? 'Playing' : (p.audioBase64 ? 'Voice' : 'Test')}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Editable Commentary Line */}
+                      <div className="relative">
+                        <textarea
+                          value={p.commentary}
+                          onChange={(e) => {
+                            const newCommentary = e.target.value;
+                            const updatedPanels = [...project.panels];
+                            
+                            // Auto recalculate subtitles from commentary words
+                            const rawWords = newCommentary.split(/\s+/).filter(Boolean);
+                            const wordDur = p.duration / Math.max(1, rawWords.length);
+                            const newSubtitles = rawWords.map((w, wIdx) => ({
+                              text: w,
+                              startTime: Math.round(wIdx * wordDur * 100) / 100,
+                              endTime: Math.round((wIdx + 1) * wordDur * 100) / 100,
+                              isPunch: /^[A-Z0-9!]{3,}|bro|wait|dead|what|he|him|fr/i.test(w) || w.includes('!') || w.includes('?'),
+                            }));
+
+                            updatedPanels[idx] = {
+                              ...p,
+                              commentary: newCommentary,
+                              subtitles: newSubtitles,
+                              // If script changed, mark audio for resynthesis
+                              audioBase64: newCommentary === p.commentary ? p.audioBase64 : undefined,
+                            };
+                            onUpdateProject((prev) => ({ ...prev, panels: updatedPanels }));
+                          }}
+                          rows={2}
+                          placeholder={`Commentary for Panel #${idx + 1}...`}
+                          className="w-full bg-zinc-950/80 border border-zinc-800 focus:border-amber-400 focus:ring-1 focus:ring-amber-400 rounded-xl p-2.5 text-zinc-200 placeholder:text-zinc-600 font-sans leading-relaxed text-xs resize-none focus:outline-none transition-colors"
+                        />
+
+                        {/* Words count indicator */}
+                        <div className="flex items-center justify-between text-[10px] text-zinc-500 mt-1 px-1">
+                          <span>{wordCount} words &bull; ~{Math.round(wordCount / 2.5)}s speech</span>
+                          {p.audioBase64 ? (
+                            <span className="text-emerald-400 font-semibold">✓ Audio synthesized</span>
+                          ) : (
+                            <span className="text-amber-400/80">Pending voice synthesis</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* 3B. MODE B: CONTINUOUS TELEPROMPTER VIEW */}
+            {fullScriptMode === 'continuous' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                  <span>Continuous Story Script (Click any paragraph to jump)</span>
+                  <span className="font-mono text-amber-400">{totalWords} words</span>
+                </div>
+
+                <div className="p-4 bg-zinc-950 rounded-2xl border border-zinc-800 max-h-[65vh] overflow-y-auto space-y-3.5 select-text leading-relaxed">
+                  {project.panels.map((p, idx) => {
+                    const startSec = getPanelStartTime(idx);
+                    const isCurrent = idx === panelIndex;
+
+                    return (
+                      <div
+                        key={p.id}
+                        onClick={() => {
+                          onSelectPanel?.(idx);
+                          onSeek?.(startSec);
+                        }}
+                        className={`p-3 rounded-xl border transition-all cursor-pointer group ${
+                          isCurrent
+                            ? 'bg-[#151528] border-amber-500/50 text-white'
+                            : 'bg-zinc-900/50 border-zinc-800/80 text-zinc-300 hover:bg-zinc-900 hover:border-zinc-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1.5 text-[10px] font-mono text-zinc-500 group-hover:text-amber-400">
+                          <span className="font-bold flex items-center gap-1.5">
+                            <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-amber-300">
+                              #{idx + 1}
+                            </span>
+                            <span>{p.title}</span>
+                          </span>
+                          <span>{formatPanelTime(startSec)} ({p.duration.toFixed(1)}s)</span>
+                        </div>
+
+                        <p className="text-xs font-sans text-zinc-200 group-hover:text-white leading-relaxed">
+                          {p.commentary || <span className="text-zinc-600 italic">(No commentary written)</span>}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

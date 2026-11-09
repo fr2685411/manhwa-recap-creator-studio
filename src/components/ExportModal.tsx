@@ -9,12 +9,16 @@ import {
   Loader2, 
   Play,
   Settings,
-  Cpu
+  Cpu,
+  Monitor,
+  Smartphone,
+  Square,
+  Mic,
+  Volume2
 } from 'lucide-react';
-import { ProjectSettings } from '../types/manhwa';
+import { ProjectSettings, Panel } from '../types/manhwa';
 import { videoRenderer } from '../services/videoRenderer';
 import { requestTtsAudio } from '../services/geminiClient';
-import { Mic, Volume2 } from 'lucide-react';
 
 interface ExportModalProps {
   project: ProjectSettings;
@@ -83,9 +87,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         }
       }
 
+      const targetAspectRatio: '16:9' | '9:16' | '1:1' = 
+        resolution === '1920x1080' ? '16:9' : (resolution === '1080x1920' ? '9:16' : '1:1');
+
       const blob = await videoRenderer.exportVideo1080p(projectToExport, {
         fps,
         bitrate,
+        resolution,
+        aspectRatio: targetAspectRatio,
         onProgress: (p, cur, tot) => {
           setProgress(p);
         },
@@ -111,7 +120,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     const a = document.createElement('a');
     a.href = videoUrl;
     const cleanTitle = (project.title || 'Manhwa_Recap').replace(/[^a-zA-Z0-9_-]/g, '_');
-    a.download = `${cleanTitle}_1080p_Mamoru.webm`;
+    const aspectTag = resolution === '1920x1080' ? '16x9_Landscape' : (resolution === '1080x1920' ? '9x16_Shorts' : '1x1_Square');
+    a.download = `${cleanTitle}_1080p_${aspectTag}.webm`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -151,28 +161,100 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         <div className="p-6 overflow-y-auto space-y-6">
           {!videoUrl && !isExporting && (
             <div className="space-y-5 text-xs">
-              {/* Resolution selection */}
+              {/* Resolution and Aspect Ratio selection */}
               <div>
-                <label className="font-bold text-zinc-300 block mb-2">Resolution</label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="font-bold text-zinc-300">Video Aspect Ratio & Resolution</label>
+                  <span className="text-[10px] text-amber-400 font-mono font-bold">
+                    {resolution === '1920x1080' ? '16:9 Widescreen (1920x1080)' : (resolution === '1080x1920' ? '9:16 Vertical (1080x1920)' : '1:1 Square (1080x1080)')}
+                  </span>
+                </div>
+
                 <div className="grid grid-cols-3 gap-2.5">
-                  {[
-                    { id: '1080x1920', label: '1080x1920', sub: '9:16 Shorts/TikTok' },
-                    { id: '1920x1080', label: '1920x1080', sub: '16:9 Landscape' },
-                    { id: '1080x1080', label: '1080x1080', sub: '1:1 Square' },
-                  ].map((res) => (
+                  <button
+                    onClick={() => setResolution('1920x1080')}
+                    className={`p-3 rounded-xl border text-left transition-all relative ${
+                      resolution === '1920x1080'
+                        ? 'border-amber-400 bg-amber-500/15 text-amber-300 shadow-sm ring-1 ring-amber-400/40'
+                        : 'border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:border-zinc-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <Monitor className="w-4 h-4 text-amber-400" />
+                      <span className="text-[9px] font-black uppercase tracking-wider bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded">
+                        16:9
+                      </span>
+                    </div>
+                    <div className="font-extrabold text-xs text-white">1920x1080</div>
+                    <div className="text-[10px] text-zinc-400 mt-0.5 font-medium">YouTube Landscape</div>
+                  </button>
+
+                  <button
+                    onClick={() => setResolution('1080x1920')}
+                    className={`p-3 rounded-xl border text-left transition-all relative ${
+                      resolution === '1080x1920'
+                        ? 'border-amber-400 bg-amber-500/15 text-amber-300 shadow-sm ring-1 ring-amber-400/40'
+                        : 'border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:border-zinc-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <Smartphone className="w-4 h-4 text-blue-400" />
+                      <span className="text-[9px] font-black uppercase tracking-wider bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded">
+                        9:16
+                      </span>
+                    </div>
+                    <div className="font-extrabold text-xs text-white">1080x1920</div>
+                    <div className="text-[10px] text-zinc-400 mt-0.5 font-medium">Shorts / TikTok</div>
+                  </button>
+
+                  <button
+                    onClick={() => setResolution('1080x1080')}
+                    className={`p-3 rounded-xl border text-left transition-all relative ${
+                      resolution === '1080x1080'
+                        ? 'border-amber-400 bg-amber-500/15 text-amber-300 shadow-sm ring-1 ring-amber-400/40'
+                        : 'border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:border-zinc-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <Square className="w-4 h-4 text-purple-400" />
+                      <span className="text-[9px] font-black uppercase tracking-wider bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded">
+                        1:1
+                      </span>
+                    </div>
+                    <div className="font-extrabold text-xs text-white">1080x1080</div>
+                    <div className="text-[10px] text-zinc-400 mt-0.5 font-medium">Square Feed</div>
+                  </button>
+                </div>
+
+                {/* Aspect ratio feedback note */}
+                <div className="mt-2 p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800 flex items-center justify-between text-[11px]">
+                  <div className="text-zinc-300 flex items-center gap-1.5">
+                    {resolution === '1920x1080' ? (
+                      <>
+                        <Monitor className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <span>Exporting in <strong>16:9 Landscape</strong> (1920×1080 Full HD) for YouTube videos.</span>
+                      </>
+                    ) : resolution === '1080x1920' ? (
+                      <>
+                        <Smartphone className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        <span>Exporting in <strong>9:16 Vertical</strong> (1080×1920 Full HD) for YouTube Shorts & TikTok.</span>
+                      </>
+                    ) : (
+                      <>
+                        <Square className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                        <span>Exporting in <strong>1:1 Square</strong> (1080×1080) for Instagram & Community posts.</span>
+                      </>
+                    )}
+                  </div>
+
+                  {resolution === '1920x1080' && project.aspectRatio !== '16:9' && onUpdateProject && (
                     <button
-                      key={res.id}
-                      onClick={() => setResolution(res.id as any)}
-                      className={`p-3 rounded-xl border text-left transition-all ${
-                        resolution === res.id
-                          ? 'border-amber-400 bg-amber-500/15 text-amber-300 shadow-sm'
-                          : 'border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:border-zinc-700'
-                      }`}
+                      onClick={() => onUpdateProject(p => ({ ...p, aspectRatio: '16:9' }))}
+                      className="px-2 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold text-[10px] transition-all ml-2 shrink-0 border border-amber-500/40"
                     >
-                      <div className="font-extrabold text-sm">{res.label}</div>
-                      <div className="text-[10px] text-zinc-500 mt-0.5">{res.sub}</div>
+                      Sync Editor to 16:9
                     </button>
-                  ))}
+                  )}
                 </div>
               </div>
 

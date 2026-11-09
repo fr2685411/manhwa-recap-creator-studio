@@ -731,12 +731,14 @@ export class VideoRenderer {
     project: ProjectSettings,
     options: {
       fps?: number;
-      bitrate?: number; // e.g. 12_000_000 for 12 Mbps
+      bitrate?: number; // e.g. 14_000_000 for 14 Mbps
+      resolution?: '1080x1920' | '1920x1080' | '1080x1080';
+      aspectRatio?: '9:16' | '16:9' | '1:1';
       onProgress: (progress: number, currentSec: number, totalSec: number) => void;
       onStatus: (status: string) => void;
     }
   ): Promise<Blob> {
-    const { fps = 30, bitrate = 14_000_000, onProgress, onStatus } = options;
+    const { fps = 30, bitrate = 14_000_000, resolution, aspectRatio, onProgress, onStatus } = options;
 
     onStatus('Preloading high-resolution panels...');
     const loadedImages = await this.preloadImages(project.panels);
@@ -761,11 +763,32 @@ export class VideoRenderer {
       }
     }
 
-    // Dimensions: 1080x1920 for 9:16 Shorts or 1920x1080 for 16:9
-    const isVertical = project.aspectRatio === '9:16';
-    const isSquare = project.aspectRatio === '1:1';
-    const width = isVertical ? 1080 : (isSquare ? 1080 : 1920);
-    const height = isVertical ? 1920 : (isSquare ? 1080 : 1080);
+    // Determine target dimensions and effective aspect ratio:
+    // Support 16:9 Landscape (1920x1080), 9:16 Shorts (1080x1920), or 1:1 Square (1080x1080)
+    let width = 1920;
+    let height = 1080;
+    let effectiveAspectRatio: '9:16' | '16:9' | '1:1' = '16:9';
+
+    if (resolution === '1920x1080' || aspectRatio === '16:9') {
+      width = 1920;
+      height = 1080;
+      effectiveAspectRatio = '16:9';
+    } else if (resolution === '1080x1920' || aspectRatio === '9:16') {
+      width = 1080;
+      height = 1920;
+      effectiveAspectRatio = '9:16';
+    } else if (resolution === '1080x1080' || aspectRatio === '1:1') {
+      width = 1080;
+      height = 1080;
+      effectiveAspectRatio = '1:1';
+    } else {
+      // Fallback based on project settings
+      const isVertical = project.aspectRatio === '9:16';
+      const isSquare = project.aspectRatio === '1:1';
+      width = isVertical ? 1080 : (isSquare ? 1080 : 1920);
+      height = isVertical ? 1920 : (isSquare ? 1080 : 1080);
+      effectiveAspectRatio = project.aspectRatio || (width === 1920 ? '16:9' : '9:16');
+    }
 
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = width;
@@ -877,7 +900,10 @@ export class VideoRenderer {
             width,
             height,
             time: virtualTime,
-            project,
+            project: {
+              ...project,
+              aspectRatio: effectiveAspectRatio,
+            },
             loadedImages,
           });
 

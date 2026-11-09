@@ -17,7 +17,10 @@ import {
   Layers,
   Wand2,
   Check,
-  Mic
+  Mic,
+  CheckSquare,
+  Square,
+  SlidersHorizontal
 } from 'lucide-react';
 import { ProjectSettings, Panel, TransitionType, TRANSITION_LIBRARY, TransitionMeta } from '../types/manhwa';
 import { audioEngine } from '../services/audioEngine';
@@ -28,8 +31,11 @@ interface TimelineProps {
   onSeek: (time: number) => void;
   selectedPanelIndex: number;
   onSelectPanel: (index: number) => void;
+  selectedPanelIndices?: number[];
+  onSelectPanelIndices?: (indices: number[]) => void;
   onUpdateProject: (updater: (prev: ProjectSettings) => ProjectSettings) => void;
   onOpenUploadModal: () => void;
+  onOpenBatchModal?: (initialSelectedIndices?: number[]) => void;
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -38,10 +44,57 @@ export const Timeline: React.FC<TimelineProps> = ({
   onSeek,
   selectedPanelIndex,
   onSelectPanel,
+  selectedPanelIndices,
+  onSelectPanelIndices,
   onUpdateProject,
   onOpenUploadModal,
+  onOpenBatchModal,
 }) => {
   const totalDuration = project.panels.reduce((sum, p) => sum + p.duration, 0);
+
+  // Multi-selection state (uses prop if controlled, otherwise internal state)
+  const [localMultiIndices, setLocalMultiIndices] = useState<number[]>([selectedPanelIndex]);
+  const activeSelectedIndices = selectedPanelIndices ?? localMultiIndices;
+
+  const setMultiIndices = (indices: number[]) => {
+    if (onSelectPanelIndices) {
+      onSelectPanelIndices(indices);
+    } else {
+      setLocalMultiIndices(indices);
+    }
+  };
+
+  const togglePanelInMulti = (index: number) => {
+    if (activeSelectedIndices.includes(index)) {
+      const next = activeSelectedIndices.filter(i => i !== index);
+      setMultiIndices(next.length > 0 ? next : [index]);
+    } else {
+      setMultiIndices([...activeSelectedIndices, index]);
+    }
+  };
+
+  const selectAllPanels = () => {
+    setMultiIndices(project.panels.map((_, i) => i));
+  };
+
+  const clearMultiSelection = () => {
+    setMultiIndices([selectedPanelIndex]);
+  };
+
+  const handleCardClick = (e: React.MouseEvent, index: number, startTime: number) => {
+    if (e.shiftKey) {
+      const start = Math.min(selectedPanelIndex, index);
+      const end = Math.max(selectedPanelIndex, index);
+      const range = Array.from({ length: end - start + 1 }, (_, i) => start + i);
+      setMultiIndices(Array.from(new Set([...activeSelectedIndices, ...range])));
+    } else if (e.ctrlKey || e.metaKey) {
+      togglePanelInMulti(index);
+    } else {
+      onSelectPanel(index);
+      setMultiIndices([index]);
+      onSeek(startTime);
+    }
+  };
 
   // Active transition popover state (which panel transition is being edited)
   const [activeTransitionPopoverIndex, setActiveTransitionPopoverIndex] = useState<number | null>(null);
@@ -152,9 +205,50 @@ export const Timeline: React.FC<TimelineProps> = ({
           <span className="text-[11px] text-zinc-500">
             {project.panels.length} Panels &bull; Total: {totalDuration.toFixed(1)}s &bull; Auto-Paced
           </span>
+
+          {/* Multi-Selection Batch Bar */}
+          {activeSelectedIndices.length > 1 && (
+            <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-lg animate-in fade-in">
+              <span className="text-[10px] font-bold text-amber-300 flex items-center gap-1">
+                <CheckSquare className="w-3 h-3 text-amber-400" />
+                {activeSelectedIndices.length} Selected
+              </span>
+              <button
+                onClick={() => onOpenBatchModal?.(activeSelectedIndices)}
+                className="px-2 py-0.5 rounded bg-amber-400 hover:bg-amber-300 text-black font-black text-[10px] flex items-center gap-1 shadow-sm transition-all"
+              >
+                <Layers className="w-2.5 h-2.5" />
+                <span>Batch Adjust</span>
+              </button>
+              <button
+                onClick={selectAllPanels}
+                className="text-[10px] text-zinc-400 hover:text-white underline decoration-zinc-600"
+              >
+                All
+              </button>
+              <button
+                onClick={clearMultiSelection}
+                className="text-[10px] text-zinc-400 hover:text-white"
+              >
+                Clear
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Batch Adjustment Tool Button */}
+          {onOpenBatchModal && (
+            <button
+              onClick={() => onOpenBatchModal(activeSelectedIndices.length > 0 ? activeSelectedIndices : [selectedPanelIndex])}
+              className="px-2.5 py-1 rounded-lg bg-zinc-800/90 hover:bg-zinc-700/90 text-amber-300 border border-amber-500/30 hover:border-amber-400/50 text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-sm"
+              title="Open Batch Adjustment Tool to configure Pan & Zoom, Subtitle Styles, and Transitions across multiple panels"
+            >
+              <Layers className="w-3.5 h-3.5 text-amber-400" />
+              <span>Batch Adjust {activeSelectedIndices.length > 1 ? `(${activeSelectedIndices.length})` : ''}</span>
+            </button>
+          )}
+
           <button
             onClick={onOpenUploadModal}
             className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold flex items-center gap-1 transition-all"
@@ -181,7 +275,8 @@ export const Timeline: React.FC<TimelineProps> = ({
         {/* Track 1: Panels Cards Strip with Interstitial Transition Nodes */}
         <div className="flex items-center gap-1.5 min-w-max pb-1">
           {project.panels.map((p, index) => {
-            const isSelected = index === selectedPanelIndex;
+            const isPrimarySelected = index === selectedPanelIndex;
+            const isMultiSelected = activeSelectedIndices.includes(index);
             const startTime = panelStartTimes[index];
             const currentTransition = getTransitionMeta(p.transition);
             const isLastPanel = index === project.panels.length - 1;
@@ -190,13 +285,12 @@ export const Timeline: React.FC<TimelineProps> = ({
               <React.Fragment key={p.id}>
                 {/* Panel Card */}
                 <div
-                  onClick={() => {
-                    onSelectPanel(index);
-                    onSeek(startTime);
-                  }}
+                  onClick={(e) => handleCardClick(e, index, startTime)}
                   className={`group relative rounded-xl border transition-all cursor-pointer flex flex-col overflow-hidden ${
-                    isSelected
+                    isPrimarySelected
                       ? 'border-amber-400 bg-amber-950/20 shadow-lg shadow-amber-500/15 ring-1 ring-amber-400/50'
+                      : isMultiSelected
+                      ? 'border-amber-500/70 bg-amber-950/15 ring-1 ring-amber-500/30'
                       : 'border-zinc-800/80 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-800/40'
                   }`}
                   style={{
@@ -207,9 +301,27 @@ export const Timeline: React.FC<TimelineProps> = ({
                 >
                   {/* Panel Card Header */}
                   <div className="p-1.5 px-2 flex items-center justify-between bg-black/40 border-b border-zinc-800/60">
-                    <span className="text-[11px] font-bold text-zinc-300 truncate max-w-[95px]">
-                      #{index + 1} {p.title}
-                    </span>
+                    <div className="flex items-center gap-1 min-w-0">
+                      {/* Checkbox for batch multi-selection */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePanelInMulti(index);
+                        }}
+                        className="text-zinc-400 hover:text-amber-400 transition-colors"
+                        title="Toggle selection for batch adjustment"
+                      >
+                        {isMultiSelected ? (
+                          <CheckSquare className="w-3.5 h-3.5 text-amber-400" />
+                        ) : (
+                          <Square className="w-3.5 h-3.5 text-zinc-600 group-hover:text-zinc-400" />
+                        )}
+                      </button>
+
+                      <span className="text-[11px] font-bold text-zinc-300 truncate max-w-[80px]">
+                        #{index + 1} {p.title}
+                      </span>
+                    </div>
 
                     {/* Actions on hover */}
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">

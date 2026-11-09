@@ -1,4 +1,3 @@
-import React from 'react';
 import { 
   Sparkles, 
   Download, 
@@ -11,7 +10,9 @@ import {
   Cloud,
   Server,
   BookOpen,
-  HelpCircle
+  HelpCircle,
+  Layers,
+  FileText
 } from 'lucide-react';
 import { ProjectSettings } from '../types/manhwa';
 import { SAMPLE_PROJECTS } from '../data/sampleChapters';
@@ -26,7 +27,9 @@ interface HeaderProps {
   onOpenScriptModal: () => void;
   onOpenExportModal: () => void;
   onOpenUploadModal: () => void;
+  onOpenBatchModal?: () => void;
   onOpenHelpModal: () => void;
+  onOpenFullScript?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -38,7 +41,9 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenScriptModal,
   onOpenExportModal,
   onOpenUploadModal,
+  onOpenBatchModal,
   onOpenHelpModal,
+  onOpenFullScript,
 }) => {
   const handleSelectSample = (sampleKey: string) => {
     const sample = SAMPLE_PROJECTS[sampleKey];
@@ -98,6 +103,17 @@ export const Header: React.FC<HeaderProps> = ({
           >
             Bed Necromancer
           </button>
+
+          {onOpenFullScript && (
+            <button
+              onClick={onOpenFullScript}
+              className="ml-2 px-2.5 py-1 text-xs rounded-lg transition-all font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 flex items-center gap-1.5 border border-zinc-700/60 bg-zinc-900/60"
+              title="Open Full Voiceover Story Script (All Panels)"
+            >
+              <FileText className="w-3.5 h-3.5 text-amber-400" />
+              <span>Full Script</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -186,6 +202,17 @@ export const Header: React.FC<HeaderProps> = ({
           <Flame className="w-3.5 h-3.5 text-amber-400" />
           <span className="hidden sm:inline">AI Script</span>
         </button>
+
+        {onOpenBatchModal && (
+          <button
+            onClick={onOpenBatchModal}
+            className="px-2.5 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-1.5 transition-all"
+            title="Batch Adjust Pan-and-Zoom & Subtitle Styles"
+          >
+            <Layers className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden md:inline">Batch Adjust</span>
+          </button>
+        )}
 
         <button
           onClick={onOpenUploadModal}
