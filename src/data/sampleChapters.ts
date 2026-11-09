@@ -132,7 +132,8 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
   'janitor-hunter': {
     id: 'janitor-hunter',
     title: 'I Transmigrated as an F-Rank Cleaner with an SSS-Grade Dustpan',
-    aspectRatio: '9:16',
+    recapMode: 'simple',
+    aspectRatio: '16:9',
     bgmTrack: 'phonk-combat',
     bgmVolume: 0.35,
     voiceVolume: 1.0,
@@ -402,7 +403,8 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
   'necromancer-bed': {
     id: 'necromancer-bed',
     title: 'The Solo Necromancer Who Refused to Leave His Bed',
-    aspectRatio: '9:16',
+    recapMode: 'simple',
+    aspectRatio: '16:9',
     bgmTrack: 'funny-lofi',
     bgmVolume: 0.35,
     voiceVolume: 1.0,

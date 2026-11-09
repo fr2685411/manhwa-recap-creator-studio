@@ -69,15 +69,23 @@ export const ScriptGeneratorModal: React.FC<ScriptGeneratorModalProps> = ({
           isPunch: /^[A-Z0-9!]{3,}|bro|wait|dead|what|he|him|fr/i.test(w) || w.includes('!') || w.includes('?'),
         }));
 
-        let camera = existing?.camera || {
+        const isSimple = tone.toLowerCase().includes('simple');
+
+        let camera = isSimple ? {
+          type: 'slow-drift' as any,
+          start: { x: 0.5, y: 0.45, zoom: 1.05 },
+          end: { x: 0.5, y: 0.55, zoom: 1.15 },
+          shakeIntensity: 0,
+          easing: 'ease-in-out' as any,
+        } : (existing?.camera || {
           type: 'crash-zoom',
           start: { x: 0.5, y: 0.5, zoom: 1.0 },
           end: { x: 0.5, y: 0.5, zoom: 1.6 },
           shakeIntensity: 0.5,
           easing: 'punch',
-        };
+        });
 
-        if (gen.suggestedCamera) {
+        if (!isSimple && gen.suggestedCamera) {
           camera = {
             ...camera,
             type: gen.suggestedCamera as any,
@@ -91,8 +99,8 @@ export const ScriptGeneratorModal: React.FC<ScriptGeneratorModalProps> = ({
           duration,
           commentary: gen.commentary,
           camera,
-          transition: existing?.transition || (idx % 2 === 0 ? 'white-flash' : 'glitch'),
-          soundEffect: (gen.soundEffect as any) || 'vine-boom',
+          transition: isSimple ? 'fade' : (existing?.transition || (idx % 2 === 0 ? 'white-flash' : 'glitch')),
+          soundEffect: isSimple ? 'none' : ((gen.soundEffect as any) || 'vine-boom'),
           soundEffectTime: 1.0,
           subtitles,
         };
@@ -187,6 +195,9 @@ export const ScriptGeneratorModal: React.FC<ScriptGeneratorModalProps> = ({
               onChange={(e) => setTone(e.target.value)}
               className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2 text-zinc-200 focus:outline-none focus:border-amber-400 text-xs font-medium"
             >
+              <option value="Simple Recap (Clean, Focused Storytelling, No SFX, Smooth Fades)">
+                ⚡ Simple Recap (No SFX, Clean Fades, TTS Ready)
+              </option>
               <option value="Unhinged Mamoru (Comedic, 4th Wall, Meme-heavy, roasts tropes)">
                 🔥 Unhinged Mamoru (Roasts art/tropes, "Chat look at bro", Meme heavy)
               </option>

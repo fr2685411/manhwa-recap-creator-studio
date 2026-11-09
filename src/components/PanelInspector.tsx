@@ -85,6 +85,8 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
   const [isExpanded, setIsExpanded] = useState(false);
   const [fullScriptMode, setFullScriptMode] = useState<'segmented' | 'continuous'>('segmented');
   const [copiedScript, setCopiedScript] = useState(false);
+  const [copiedTtsLines, setCopiedTtsLines] = useState(false);
+  const [ttsExportFormat, setTtsExportFormat] = useState<'clean' | 'numbered' | 'full'>('clean');
   const [isBatchVoicingAll, setIsBatchVoicingAll] = useState(false);
   const [batchVoiceStatus, setBatchVoiceStatus] = useState('');
   const [auditioningPanelId, setAuditioningPanelId] = useState<string | null>(null);
@@ -178,6 +180,57 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
     const a = document.createElement('a');
     a.href = url;
     a.download = `${(project.title || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}_script.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Generate clean voiceover text lines for TTS engines (ElevenLabs, Edge-TTS, Kokoro, Chatterbox, Bark)
+  const getTtsTextContent = (format: 'clean' | 'numbered' | 'full' = ttsExportFormat) => {
+    if (format === 'clean') {
+      // 1 line per panel commentary: ideal for batch TTS audio generators
+      return project.panels
+        .map(p => p.commentary.trim())
+        .filter(Boolean)
+        .join('\n');
+    }
+    if (format === 'numbered') {
+      return project.panels
+        .map((p, idx) => `[Panel ${idx + 1}] ${p.commentary.trim()}`)
+        .filter(line => !line.endsWith(']'))
+        .join('\n');
+    }
+    // full teleprompter
+    let content = `========================================================\n`;
+    content += `MANHWA RECAP STORY SCRIPT: ${project.title || 'Untitled'}\n`;
+    content += `Aspect Ratio: ${project.aspectRatio} | Voice Persona: ${project.voicePersona} | Panels: ${project.panels.length}\n`;
+    content += `Total Words: ${totalWords} | Estimated Duration: ~${totalDuration.toFixed(1)}s\n`;
+    content += `========================================================\n\n`;
+    project.panels.forEach((p, idx) => {
+      const startSec = getPanelStartTime(idx);
+      const endSec = startSec + p.duration;
+      content += `[PANEL ${idx + 1}] (${formatPanelTime(startSec)} - ${formatPanelTime(endSec)} | ${p.duration.toFixed(1)}s) - "${p.title}"\n`;
+      content += `${p.commentary || '(No commentary written yet)'}\n\n`;
+    });
+    return content;
+  };
+
+  const handleCopyTtsLines = (format: 'clean' | 'numbered' | 'full' = ttsExportFormat) => {
+    const text = getTtsTextContent(format);
+    navigator.clipboard.writeText(text);
+    setCopiedTtsLines(true);
+    setTimeout(() => setCopiedTtsLines(false), 2000);
+  };
+
+  const handleExportTtsLinesTxt = (format: 'clean' | 'numbered' | 'full' = ttsExportFormat) => {
+    const text = getTtsTextContent(format);
+    const suffix = format === 'clean' ? '_tts_lines' : (format === 'numbered' ? '_tts_numbered' : '_script');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(project.title || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}${suffix}.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -840,12 +893,12 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
                 </button>
 
                 <button
-                  onClick={handleExportScriptTxt}
-                  className="py-1.5 px-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 text-[11px] font-bold flex items-center gap-1.5 transition-all"
-                  title="Download script as formatted .txt file"
+                  onClick={() => handleExportTtsLinesTxt('clean')}
+                  className="py-1.5 px-2.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-[11px] font-bold flex items-center gap-1.5 transition-all"
+                  title="Export clean line-by-line script for TTS audio generation"
                 >
                   <Download className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Export .TXT</span>
+                  <span>TTS Lines (.TXT)</span>
                 </button>
 
                 {panelsWithVoice < totalCommentaryPanels && (
@@ -868,6 +921,94 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
                   <span>{batchVoiceStatus}</span>
                 </div>
               )}
+            </div>
+
+            {/* TTS Voiceover Export Box (Ready for ElevenLabs, Edge-TTS, Kokoro, Whisper) */}
+            <div className="p-3.5 bg-gradient-to-br from-blue-950/40 via-indigo-950/30 to-zinc-900/90 rounded-2xl border border-blue-500/30 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-blue-500/20 border border-blue-500/40 flex items-center justify-center">
+                    <Download className="w-3.5 h-3.5 text-blue-400" />
+                  </div>
+                  <div>
+                    <span className="font-bold text-white text-xs block">TTS Script Export for Audio Generation</span>
+                    <span className="text-[10px] text-zinc-400">Generate voiceover audio with external TTS engines using these text lines</span>
+                  </div>
+                </div>
+                <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                  TTS Ready
+                </span>
+              </div>
+
+              {/* Format selection */}
+              <div className="flex items-center gap-1.5 bg-zinc-950/70 p-1 rounded-xl border border-zinc-800 text-[11px]">
+                <button
+                  onClick={() => setTtsExportFormat('clean')}
+                  className={`flex-1 py-1 px-2 rounded-lg font-bold transition-all text-center ${
+                    ttsExportFormat === 'clean'
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                  title="1 line per panel - standard input format for ElevenLabs, Edge-TTS CLI, Kokoro"
+                >
+                  Line-by-Line (Clean)
+                </button>
+                <button
+                  onClick={() => setTtsExportFormat('numbered')}
+                  className={`flex-1 py-1 px-2 rounded-lg font-bold transition-all text-center ${
+                    ttsExportFormat === 'numbered'
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                  title="[Panel 1] line format"
+                >
+                  Numbered Prompts
+                </button>
+                <button
+                  onClick={() => setTtsExportFormat('full')}
+                  className={`flex-1 py-1 px-2 rounded-lg font-bold transition-all text-center ${
+                    ttsExportFormat === 'full'
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                  title="Full teleprompter document with durations"
+                >
+                  Teleprompter
+                </button>
+              </div>
+
+              {/* Live Preview Box */}
+              <div className="p-2.5 bg-zinc-950/90 rounded-xl border border-zinc-800/80 font-mono text-[10px] text-zinc-300 max-h-24 overflow-y-auto leading-relaxed select-all">
+                <div className="text-[9px] text-zinc-500 uppercase font-sans font-bold mb-1">
+                  Preview ({ttsExportFormat === 'clean' ? '1 line per panel commentary' : ttsExportFormat === 'numbered' ? 'Numbered panel lines' : 'Teleprompter'})
+                </div>
+                {getTtsTextContent(ttsExportFormat).slice(0, 300)}
+                {getTtsTextContent(ttsExportFormat).length > 300 && '...'}
+              </div>
+
+              {/* Action Buttons for TTS */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleExportTtsLinesTxt(ttsExportFormat)}
+                  className="flex-1 py-1.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md shadow-blue-600/25"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download .TXT for TTS</span>
+                </button>
+
+                <button
+                  onClick={() => handleCopyTtsLines(ttsExportFormat)}
+                  className={`py-1.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 border transition-all ${
+                    copiedTtsLines
+                      ? 'bg-emerald-600 text-white border-emerald-500'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700'
+                  }`}
+                  title="Copy text lines to clipboard to paste into TTS web tools"
+                >
+                  {copiedTtsLines ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5 text-blue-400" />}
+                  <span>{copiedTtsLines ? 'Copied Lines!' : 'Copy Lines'}</span>
+                </button>
+              </div>
             </div>
 
             {/* 2. View Mode Selector (Segmented Flow vs Continuous Teleprompter) */}
@@ -1626,6 +1767,27 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
         {/* TAB 4: SOUND EFFECTS & COMEDY BEATS */}
         {activeTab === 'sfx' && (
           <div className="space-y-4">
+            {project.recapMode === 'simple' && (
+              <div className="p-3 bg-emerald-950/30 border border-emerald-500/40 rounded-xl flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div>
+                    <div className="font-bold text-emerald-300 text-xs">Simple Recap Mode Active</div>
+                    <div className="text-[10px] text-zinc-400">Sound effects are muted & disabled for clean, distraction-free storytelling.</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => onUpdateProject(p => ({
+                    ...p,
+                    panels: p.panels.map(pan => ({ ...pan, soundEffect: 'none' }))
+                  }))}
+                  className="px-2 py-1 rounded bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 text-[10px] font-bold border border-emerald-500/30 shrink-0 ml-2"
+                >
+                  Clear All SFX
+                </button>
+              </div>
+            )}
+
             <div>
               <label className="font-bold text-zinc-300 block mb-2">Comedic Sound Effect Trigger</label>
               <div className="grid grid-cols-2 gap-2">

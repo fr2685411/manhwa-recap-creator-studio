@@ -222,7 +222,15 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
 
       // Step 2: Build complete Panels sequence
       const finalPanels: Panel[] = [];
-      const defaultRoasts = [
+      const isSimpleRecap = humorTone.toLowerCase().includes('simple');
+
+      const defaultRoasts = isSimpleRecap ? [
+        `In this chapter, our protagonist finds himself facing the darkest depths of the dungeon, armed only with what seems to be ordinary equipment.`,
+        `Against all odds, the ancient system recognizes his hidden potential, unlocking abilities that turn the tide of the entire battle.`,
+        `The enemies realize too late that they have underestimated someone far beyond their comprehension.`,
+        `With a calm and decisive strike, the trial is conquered, leaving everyone in stunned disbelief.`,
+        `As the dust settles, a new journey begins, setting the stage for what comes next.`,
+      ] : [
         `Chat, look at this! Bro just woke up in an SSS-rank dungeon and thought he had plot armor!`,
         `Wait, why does this boss look like he's on 500mg of dungeon tren?! Look at bro's posture!`,
         `Ain't no way bro is actually attempting this. The author completely gave up on game balance!`,
@@ -235,9 +243,9 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
         const script = generatedScripts[i] || {
           title: `Scene ${i + 1}`,
           commentary: defaultRoasts[i % defaultRoasts.length],
-          suggestedCamera: i % 2 === 0 ? 'crash-zoom' : 'pan-down',
-          soundEffect: i === 0 ? 'record-scratch' : 'vine-boom',
-          transition: i % 2 === 0 ? 'white-flash' : 'glitch',
+          suggestedCamera: isSimpleRecap ? 'slow-drift' : (i % 2 === 0 ? 'crash-zoom' : 'pan-down'),
+          soundEffect: isSimpleRecap ? 'none' : (i === 0 ? 'record-scratch' : 'vine-boom'),
+          transition: isSimpleRecap ? 'fade' : (i % 2 === 0 ? 'white-flash' : 'glitch'),
           durationSeconds: 5.2,
         };
 
@@ -249,10 +257,17 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
           text: w,
           startTime: Math.round(wIdx * wordDur * 100) / 100,
           endTime: Math.round((wIdx + 1) * wordDur * 100) / 100,
-          isPunch: /^[A-Z0-9!]{3,}|bro|wait|dead|what|he|him|fr/i.test(w) || w.includes('!') || w.includes('?'),
+          isPunch: !isSimpleRecap && (/^[A-Z0-9!]{3,}|bro|wait|dead|what|he|him|fr/i.test(w) || w.includes('!') || w.includes('?')),
         }));
 
-        let camera = {
+        let camera = isSimpleRecap ? {
+          type: 'slow-drift' as any,
+          start: { x: 0.5, y: 0.45, zoom: 1.05 },
+          end: { x: 0.5, y: 0.55, zoom: 1.15 },
+          shakeIntensity: 0,
+          shakeTime: 0,
+          easing: 'ease-in-out' as any,
+        } : {
           type: (script.suggestedCamera as any) || (i % 2 === 0 ? 'crash-zoom' : 'pan-down'),
           start: { x: 0.5, y: 0.35, zoom: 1.1 },
           end: { x: 0.5, y: 0.65, zoom: 1.45 },
@@ -506,6 +521,9 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
                   onChange={(e) => setHumorTone(e.target.value)}
                   className="w-full bg-black border border-zinc-700 rounded-lg px-2.5 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-amber-400"
                 >
+                  <option value="Simple Recap (Clean Storytelling, No Sound Effects, Smooth Fades)">
+                    ⚡ Simple Recap (No SFX, Clean Fades)
+                  </option>
                   <option value="Unhinged Mamoru (Comedic, 4th Wall, Meme-heavy, roasts tropes)">
                     🔥 Unhinged Mamoru (Audience roast)
                   </option>

@@ -14,7 +14,8 @@ import {
   Smartphone,
   Square,
   Mic,
-  Volume2
+  Volume2,
+  FileText
 } from 'lucide-react';
 import { ProjectSettings, Panel } from '../types/manhwa';
 import { videoRenderer } from '../services/videoRenderer';
@@ -125,6 +126,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  };
+
+  const handleExportTtsScript = () => {
+    const lines = project.panels
+      .map(p => p.commentary.trim())
+      .filter(Boolean)
+      .join('\n');
+    const blob = new Blob([lines], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(project.title || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}_tts_lines.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const totalDuration = videoRenderer.getTotalDuration(project);
@@ -340,6 +357,26 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     </span>
                   )}
                 </div>
+              </div>
+
+              {/* TTS Voiceover Export Box */}
+              <div className="p-3 bg-blue-950/20 border border-blue-900/40 rounded-xl flex items-center justify-between text-xs">
+                <div>
+                  <div className="font-bold text-white flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-blue-400" />
+                    <span>AI Voiceover Script for External TTS</span>
+                  </div>
+                  <div className="text-[10px] text-zinc-400 mt-0.5">
+                    Download clean line-by-line .txt file to generate speech using ElevenLabs, Edge-TTS, or Kokoro
+                  </div>
+                </div>
+                <button
+                  onClick={handleExportTtsScript}
+                  className="px-3 py-1.5 rounded-lg bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 font-bold border border-blue-500/40 flex items-center gap-1.5 transition-all shrink-0 ml-2 text-[11px]"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export TTS .TXT</span>
+                </button>
               </div>
 
               {error && (

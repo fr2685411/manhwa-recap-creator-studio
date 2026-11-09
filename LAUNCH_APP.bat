@@ -108,15 +108,18 @@ echo.
 
 :MODULES_EXIST
 
-:: 5. Launch web browser after 3 seconds in background
+:: 5. Launch web browser directly to localhost:3000
 echo [3/3] Starting studio server at http://localhost:3000...
-echo Opening your web browser in 3 seconds...
-start "" cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:3000"
+echo Opening http://localhost:3000 in your browser...
+start http://localhost:3000
 
 :: 6. Start Server
 color 0a
 echo =======================================================================
-echo   APP RUNNING AT: http://localhost:3000
+echo   STUDIO RUNNING SUCCESSFULLY!
+echo.
+echo   OPEN IN BROWSER: http://localhost:3000
+echo   (Do NOT use 0.0.0.0:3000 - Windows requires localhost:3000)
 echo.
 echo   - Keep this window open while using the app.
 echo   - To stop the server at any time, press Ctrl+C or close this window.

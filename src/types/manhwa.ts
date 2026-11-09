@@ -205,16 +205,19 @@ export interface Panel {
   subtitleStyle?: SubtitleStyle; // Custom subtitle style override for this individual panel
 }
 
+export type RecapMode = 'simple' | 'meme-dynamic';
+
 export interface ProjectSettings {
   id: string;
   title: string;
+  recapMode?: RecapMode; // 'simple' = No SFX, clean fade transitions, 16:9 default | 'meme-dynamic' = Mamoru meme cuts & SFX
   aspectRatio: '9:16' | '16:9' | '1:1';
   bgmTrack: 'phonk-combat' | 'funny-lofi' | 'epic-orchestral' | 'synthwave-hype' | 'chill-reading' | 'none';
   bgmVolume: number; // 0.0 to 1.0
   voiceVolume: number;
   voicePersona: 'Puck' | 'Fenrir' | 'Zephyr' | 'Kore' | 'Charon';
   voiceEngine: 'gemini' | 'browser';
-  humorTone: 'unhinged-mamoru' | 'sarcastic-critic' | 'hype-shonen' | 'murim-slap';
+  humorTone: 'unhinged-mamoru' | 'sarcastic-critic' | 'hype-shonen' | 'murim-slap' | 'simple-recap';
   subtitleStyle: SubtitleStyle;
   panels: Panel[];
 }

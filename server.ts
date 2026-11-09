@@ -44,7 +44,19 @@ app.post('/api/gemini/generate-script', async (req: Request, res: Response) => {
 
     const ai = getAiClient();
 
-    const systemPrompt = `You are an elite YouTube Manhwa Recap creator in the iconic comedic style of @MamoruManhwa.
+    const isSimpleRecap = tone.toLowerCase().includes('simple');
+
+    const systemPrompt = isSimpleRecap ? `You are a professional YouTube Manhwa Recap narrator in Simple Recap style.
+Your goal:
+- Deliver clear, immersive, engaging storytelling that summarizes the manhwa chapter.
+- No distracting fourth-wall screams or sound effects: always set "soundEffect": "none".
+- Camera motions must be calm and smooth: use "suggestedCamera": "slow-drift" or "pan-down".
+- Each panel should have:
+  1. commentary: 1-3 clear, engaging spoken lines suitable for text-to-speech (TTS) audio narration.
+  2. suggestedCamera: 'slow-drift' or 'pan-down'.
+  3. soundEffect: 'none'.
+  4. subtitles: word-by-word or short phrases for clean captions.
+  5. durationSeconds: estimated speaking duration (usually 4 to 8 seconds).` : `You are an elite YouTube Manhwa Recap creator in the iconic comedic style of @MamoruManhwa.
 Your personality and tone:
 - You speak as a viewer watching along with the audience ("Chat, look at this guy", "Bro really thought he had plot armor", "Wait, why does the villain look like a K-pop idol with anger issues?").
 - You constantly BREAK THE FOURTH WALL: talk directly to the audience, roast the author/artist's tropes ("The artist clearly copy-pasted this horse", "Truck-kun took a vacation so they used a tractor"), question ridiculous power scaling, and call out clichés.
@@ -292,7 +304,25 @@ app.post('/api/gemini/generate-chapter-from-images', async (req: Request, res: R
       });
     });
 
-    const promptText = `You are @MamoruManhwa, the viral YouTube manhwa recap narrator known for hilarious comedy, speaking as the audience ("Chat, look at this guy"), and breaking the fourth wall.
+    const isSimpleRecap = tone.toLowerCase().includes('simple');
+
+    const promptText = isSimpleRecap 
+      ? `You are a professional YouTube Manhwa Recap narrator in Simple Recap style.
+Examine these ${limitedImages.length} sequential manhwa chapter panels.
+Title/Premise: "${chapterTitle}"
+Tone: Simple Recap (Clean, engaging story summary, NO sound effects, smooth fades, 16:9 widescreen default)
+User Notes: ${userNotes}
+
+For EACH panel image in order from 1 to ${limitedImages.length}:
+1. "title": Short descriptive title for this scene/panel.
+2. "commentary": 1-3 lines of engaging, clear spoken narration describing the events and character motivations in this panel. Write clean sentences ideal for text-to-speech (TTS) voice generation.
+3. "suggestedCamera": 'slow-drift' or 'pan-down'.
+4. "soundEffect": 'none'.
+5. "transition": 'fade'.
+6. "durationSeconds": Estimated natural speaking duration (between 4.0 and 7.5 seconds).
+
+Return a JSON array containing an object for each panel in matching order.`
+      : `You are @MamoruManhwa, the viral YouTube manhwa recap narrator known for hilarious comedy, speaking as the audience ("Chat, look at this guy"), and breaking the fourth wall.
 Examine these ${limitedImages.length} sequential manhwa chapter panels.
 Title/Premise: "${chapterTitle}"
 Tone: ${tone}
@@ -441,7 +471,11 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ManhwaRecap Studio Server running at http://0.0.0.0:${PORT}`);
+    console.log('\n=======================================================================');
+    console.log(`  ManhwaRecap Studio Server is RUNNING!`);
+    console.log(`  >>> OPEN IN YOUR BROWSER: http://localhost:${PORT} <<<`);
+    console.log(`  (Windows Notice: Always use 'localhost:3000', do NOT use '0.0.0.0')`);
+    console.log('=======================================================================\n');
   });
 }
 

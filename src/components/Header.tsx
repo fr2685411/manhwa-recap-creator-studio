@@ -12,7 +12,8 @@ import {
   BookOpen,
   HelpCircle,
   Layers,
-  FileText
+  FileText,
+  Zap
 } from 'lucide-react';
 import { ProjectSettings } from '../types/manhwa';
 import { SAMPLE_PROJECTS } from '../data/sampleChapters';
@@ -117,45 +118,99 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Center Controls: Aspect Ratio */}
-      <div className="flex items-center gap-1 bg-zinc-900/90 p-1 rounded-xl border border-zinc-800">
-        <button
-          onClick={() => onUpdateProject(p => ({ ...p, aspectRatio: '9:16' }))}
-          title="9:16 Vertical (YouTube Shorts / TikTok / Reels - Mamoru Standard)"
-          className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
-            project.aspectRatio === '9:16'
-              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
-              : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <Smartphone className="w-3.5 h-3.5" />
-          <span>9:16 Shorts</span>
-        </button>
-        <button
-          onClick={() => onUpdateProject(p => ({ ...p, aspectRatio: '16:9' }))}
-          title="16:9 Landscape (YouTube Video Essay)"
-          className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
-            project.aspectRatio === '16:9'
-              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
-              : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <Monitor className="w-3.5 h-3.5" />
-          <span>16:9</span>
-        </button>
-        <button
-          onClick={() => onUpdateProject(p => ({ ...p, aspectRatio: '1:1' }))}
-          title="1:1 Square"
-          className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
-            project.aspectRatio === '1:1'
-              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
-              : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <Square className="w-3.5 h-3.5" />
-          <span>1:1</span>
-        </button>
-      </div>
+        {/* Mode Selector: Simple Recap vs Mamoru Dynamic */}
+        <div className="flex items-center gap-1 bg-zinc-900/90 p-1 rounded-xl border border-zinc-800">
+          <button
+            onClick={() => {
+              onUpdateProject((p) => ({
+                ...p,
+                recapMode: 'simple',
+                aspectRatio: '16:9',
+                panels: p.panels.map((panel) => ({
+                  ...panel,
+                  soundEffect: 'none',
+                  transition: 'fade',
+                  camera: {
+                    ...panel.camera,
+                    type: panel.camera.type === 'crash-zoom' || panel.camera.type === 'shake-impact' ? 'slow-drift' : panel.camera.type,
+                    shakeIntensity: 0,
+                    easing: 'ease-in-out',
+                  },
+                })),
+              }));
+            }}
+            title="Simple Recap Mode: No sound effects, clean fade transitions, 16:9 widescreen, clean TTS text"
+            className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+              project.recapMode === 'simple' || !project.recapMode
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Zap className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Simple Recap</span>
+            <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1 py-0.2 rounded font-mono font-bold">
+              Clean
+            </span>
+          </button>
+
+          <button
+            onClick={() => {
+              onUpdateProject((p) => ({
+                ...p,
+                recapMode: 'meme-dynamic',
+              }));
+            }}
+            title="Meme / Dynamic Recap Mode: Comedic punchline SFX, speed lines, crash zooms, and impact shakes"
+            className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+              project.recapMode === 'meme-dynamic'
+                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Flame className="w-3.5 h-3.5 text-amber-400" />
+            <span>Meme / Dynamic</span>
+          </button>
+        </div>
+
+        {/* Center Controls: Aspect Ratio (16:9 Widescreen Default) */}
+        <div className="flex items-center gap-1 bg-zinc-900/90 p-1 rounded-xl border border-zinc-800">
+          <button
+            onClick={() => onUpdateProject((p) => ({ ...p, aspectRatio: '16:9' }))}
+            title="16:9 Widescreen (Default YouTube / Landscape Video)"
+            className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+              project.aspectRatio === '16:9'
+                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Monitor className="w-3.5 h-3.5" />
+            <span>16:9 (Default)</span>
+          </button>
+          <button
+            onClick={() => onUpdateProject((p) => ({ ...p, aspectRatio: '9:16' }))}
+            title="9:16 Vertical (YouTube Shorts / TikTok / Reels)"
+            className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+              project.aspectRatio === '9:16'
+                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Smartphone className="w-3.5 h-3.5" />
+            <span>9:16 Shorts</span>
+          </button>
+          <button
+            onClick={() => onUpdateProject((p) => ({ ...p, aspectRatio: '1:1' }))}
+            title="1:1 Square (Instagram / Community)"
+            className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+              project.aspectRatio === '1:1'
+                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Square className="w-3.5 h-3.5" />
+            <span>1:1</span>
+          </button>
+        </div>
 
       {/* Right Actions: Local Model, Auto-Recap, AI Script, Add Panel, 1080p Export */}
       <div className="flex items-center gap-2">
