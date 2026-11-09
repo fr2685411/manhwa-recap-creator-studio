@@ -9,16 +9,18 @@ Create viral, 4th-wall breaking YouTube Manhwa Recap videos with comedic AI voic
 After extracting your downloaded ZIP file, you can run the whole app with **one double-click**:
 
 ### On Windows:
-- Double-click **`start-app.exe`** or **`LAUNCH_APP.bat`** (or `start-app.bat`).
+- Double-click **`LAUNCH_APP.bat`** (or **`run.bat`** / **`start.bat`**).
 - It automatically:
-  1. Checks if Node.js is installed (and prompts to install via winget or browser if missing).
-  2. Sets up your `.env` configuration file automatically.
-  3. Installs all required packages and dependencies (`npm install`) on first run.
-  4. Starts both the backend and frontend servers on `http://localhost:3000`.
-  5. **Automatically opens your web browser to `http://localhost:3000`** so you can start creating immediately!
+  1. Sets the directory directly to your app folder so it never gets lost.
+  2. Detects Node.js on your computer (and offers automatic 1-click install if missing).
+  3. Sets up your `.env` configuration file automatically.
+  4. Automatically runs `npm install` on first launch to install all requirements.
+  5. Starts both the backend and frontend servers on `http://localhost:3000`.
+  6. **Automatically opens your web browser to `http://localhost:3000`** so you can start creating immediately!
+  7. If anything ever goes wrong, it keeps the window open so you can see the message.
 
 ### On Linux & macOS:
-- Double-click or run **`./start-app.bin`** (or `./start-app.sh`).
+- Double-click or run **`./start-app.sh`** (or `./start-app.bin`).
 - It will verify Node.js, install dependencies, launch the server, and automatically open your browser.
 
 ---
