@@ -29,7 +29,18 @@ import {
   Maximize2,
   Minimize2,
   Download,
-  ExternalLink
+  ExternalLink,
+  ScanText,
+  MessageSquare,
+  Loader2,
+  Columns,
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  Gauge,
+  Info,
+  FastForward,
+  ArrowRight
 } from 'lucide-react';
 import { 
   Panel, 
@@ -43,11 +54,16 @@ import {
   SubtitleStyle,
   SubtitleShadowPreset
 } from '../types/manhwa';
-import { audioEngine } from '../services/audioEngine';
-import { requestTtsAudio, speakBrowserVoice } from '../services/geminiClient';
+import { audioEngine, AudioDiagnostics } from '../services/audioEngine';
+import { 
+  requestTtsAudio, 
+  speakBrowserVoice, 
+  requestPanelAnalysis, 
+  convertImageUrlToBase64 
+} from '../services/geminiClient';
 import { localAiEngine } from '../services/localAiEngine';
 
-export type InspectorTabType = 'script' | 'full-script' | 'voice' | 'camera' | 'sfx' | 'subtitles' | 'subtitle-settings';
+export type InspectorTabType = 'script' | 'full-script' | 'voice' | 'audio-diag' | 'camera' | 'sfx' | 'subtitles' | 'subtitle-settings';
 
 interface PanelInspectorProps {
   panel: Panel | undefined;
@@ -90,6 +106,15 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
   const [isBatchVoicingAll, setIsBatchVoicingAll] = useState(false);
   const [batchVoiceStatus, setBatchVoiceStatus] = useState('');
   const [auditioningPanelId, setAuditioningPanelId] = useState<string | null>(null);
+  const [isAnalyzingBubbleText, setIsAnalyzingBubbleText] = useState(false);
+  const [bubbleAnalysisStatus, setBubbleAnalysisStatus] = useState('');
+  const [isBatchAnalyzingBubbles, setIsBatchAnalyzingBubbles] = useState(false);
+
+  // Audio waveform & distortion diagnostics state
+  const [audioDiagnostics, setAudioDiagnostics] = useState<AudioDiagnostics | null>(null);
+  const [isLoadingDiagnostics, setIsLoadingDiagnostics] = useState(false);
+  const [diagAuditionProgress, setDiagAuditionProgress] = useState<number | null>(null);
+  const diagAnimRef = useRef<number | null>(null);
 
   // Subtitle style helper for current panel (falls back to project default)
   const currentSubtitleStyle: SubtitleStyle = {
@@ -237,6 +262,141 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  // Analyze single panel image with Gemini Vision OCR to extract speech bubbles and generate matched voiceover
+  const handleAnalyzeCurrentPanelBubbles = async () => {
+    if (!panel || !panel.imageUrl) return;
+    setIsAnalyzingBubbleText(true);
+    setBubbleAnalysisStatus('Reading speech bubbles from image...');
+    try {
+      const isSampleTitle = /cleaner|dustpan|janitor|necromancer|bed/i.test(project.title);
+      const sanitizedTitle = isSampleTitle ? 'Current Manhwa Chapter' : project.title;
+
+      const base64 = await convertImageUrlToBase64(panel.imageUrl);
+      setBubbleAnalysisStatus('Studying image details & dialogue bubbles...');
+      const result = await requestPanelAnalysis({
+        imageBase64: base64,
+        chapterTitle: sanitizedTitle,
+        tone: project.recapMode === 'simple' ? 'Simple Recap (Clean story summary, no SFX)' : project.humorTone,
+        context: `Panel ${panelIndex + 1} of ${project.panels.length}`,
+      });
+
+      if (result) {
+        const rawWords = (result.commentary || '').split(/\s+/).filter(Boolean);
+        const duration = result.durationSeconds || Math.max(4.5, Math.min(8.0, rawWords.length * 0.45));
+        const wordDur = duration / Math.max(1, rawWords.length);
+        const subtitles = rawWords.map((w: string, wIdx: number) => ({
+          text: w,
+          startTime: Math.round(wIdx * wordDur * 100) / 100,
+          endTime: Math.round((wIdx + 1) * wordDur * 100) / 100,
+          isPunch: project.recapMode !== 'simple' && (/^[A-Z0-9!]{3,}|bro|wait|dead|what|he|him|fr/i.test(w) || w.includes('!') || w.includes('?')),
+        }));
+
+        // Synthesize voiceover audio immediately for this new line
+        let newAudioBase64: string | undefined = undefined;
+        if (result.commentary) {
+          setBubbleAnalysisStatus('🎙️ Synthesizing clean voiceover for new line...');
+          try {
+            const persona = panel.voiceSettings?.voicePersona || project.voicePersona || 'Puck';
+            const style = project.recapMode === 'simple'
+              ? 'Clear immersive narrative recap narrator'
+              : 'Energetic comedic YouTube manhwa recap narrator breaking the fourth wall';
+            newAudioBase64 = await requestTtsAudio(result.commentary, persona, style);
+          } catch (ttsErr) {
+            console.warn('Auto voice synthesis for new line skipped:', ttsErr);
+          }
+        }
+
+        onUpdatePanel({
+          ...panel,
+          title: result.title || panel.title,
+          detectedDialogue: result.detectedDialogue || panel.detectedDialogue,
+          commentary: result.commentary || panel.commentary,
+          duration,
+          camera: {
+            ...panel.camera,
+            type: (result.suggestedCamera as any) || panel.camera.type,
+          },
+          soundEffect: project.recapMode === 'simple' ? 'none' : ((result.soundEffect as any) || panel.soundEffect),
+          audioBase64: newAudioBase64,
+          subtitles,
+        });
+      }
+    } catch (err: any) {
+      console.error('Failed to analyze speech bubbles:', err);
+    } finally {
+      setIsAnalyzingBubbleText(false);
+      setBubbleAnalysisStatus('');
+    }
+  };
+
+  // Batch analyze all panel images to read speech bubbles and generate grounded voiceover
+  const handleBatchAnalyzeAllBubbles = async () => {
+    setIsBatchAnalyzingBubbles(true);
+    let done = 0;
+    try {
+      const isSampleTitle = /cleaner|dustpan|janitor|necromancer|bed/i.test(project.title);
+      const sanitizedTitle = isSampleTitle ? 'Current Manhwa Chapter' : project.title;
+
+      const updatedPanels = [...project.panels];
+      for (let i = 0; i < updatedPanels.length; i++) {
+        const targetPanel = updatedPanels[i];
+        if (targetPanel && targetPanel.imageUrl) {
+          done++;
+          setBubbleAnalysisStatus(`Reading speech bubbles: panel ${done}/${project.panels.length}...`);
+          try {
+            const base64 = await convertImageUrlToBase64(targetPanel.imageUrl);
+            const result = await requestPanelAnalysis({
+              imageBase64: base64,
+              chapterTitle: sanitizedTitle,
+              tone: project.recapMode === 'simple' ? 'Simple Recap (Clean story summary, no SFX)' : project.humorTone,
+              context: `Panel ${i + 1} of ${project.panels.length}`,
+            });
+
+            if (result) {
+              const rawWords = (result.commentary || '').split(/\s+/).filter(Boolean);
+              const duration = result.durationSeconds || Math.max(4.5, Math.min(8.0, rawWords.length * 0.45));
+              const wordDur = duration / Math.max(1, rawWords.length);
+              const subtitles = rawWords.map((w: string, wIdx: number) => ({
+                text: w,
+                startTime: Math.round(wIdx * wordDur * 100) / 100,
+                endTime: Math.round((wIdx + 1) * wordDur * 100) / 100,
+                isPunch: project.recapMode !== 'simple' && (/^[A-Z0-9!]{3,}|bro|wait|dead|what|he|him|fr/i.test(w) || w.includes('!') || w.includes('?')),
+              }));
+
+              // Synthesize voice
+              let audioBase64: string | undefined = undefined;
+              if (result.commentary) {
+                try {
+                  const persona = targetPanel.voiceSettings?.voicePersona || project.voicePersona || 'Puck';
+                  audioBase64 = await requestTtsAudio(result.commentary, persona);
+                } catch {
+                  // Fallback
+                }
+              }
+
+              updatedPanels[i] = {
+                ...targetPanel,
+                title: result.title || targetPanel.title,
+                detectedDialogue: result.detectedDialogue || targetPanel.detectedDialogue,
+                commentary: result.commentary || targetPanel.commentary,
+                duration,
+                soundEffect: project.recapMode === 'simple' ? 'none' : ((result.soundEffect as any) || targetPanel.soundEffect),
+                audioBase64: audioBase64 || targetPanel.audioBase64,
+                subtitles,
+              };
+              onUpdateProject(prev => ({ ...prev, panels: [...updatedPanels] }));
+            }
+          } catch (pErr) {
+            console.warn(`Panel ${i + 1} bubble analysis skipped:`, pErr);
+          }
+        }
+      }
+    } finally {
+      setIsBatchAnalyzingBubbles(false);
+      setBubbleAnalysisStatus('');
+    }
+  };
+
   const handleAuditionPanelVoice = async (targetPanel: Panel) => {
     if (!targetPanel.commentary) return;
     if (auditioningPanelId === targetPanel.id) {
@@ -249,10 +409,12 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
     if (targetPanel.audioBase64) {
       try {
         await audioEngine.playVoiceBase64(targetPanel.audioBase64, targetPanel.voiceSettings);
-      } catch (err) {
-        console.warn('Playback error:', err);
-      } finally {
         setAuditioningPanelId(null);
+      } catch (err) {
+        console.warn('Playback error, falling back to clean browser voice:', err);
+        speakBrowserVoice(targetPanel.commentary, () => {
+          setAuditioningPanelId(null);
+        });
       }
     } else {
       speakBrowserVoice(targetPanel.commentary, () => {
@@ -331,16 +493,82 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
     });
   };
 
-  // Compute waveform whenever audioBase64 changes
+  // Compute waveform and comprehensive audio diagnostics whenever audioBase64 changes
   useEffect(() => {
     if (panel?.audioBase64) {
-      audioEngine.getAudioBufferWaveform(panel.audioBase64, 32).then(bars => {
+      setIsLoadingDiagnostics(true);
+      audioEngine.getAudioBufferWaveform(panel.audioBase64, 48).then(bars => {
         setWaveformBars(bars);
       });
+      audioEngine.getAudioDiagnostics(panel.audioBase64, 140)
+        .then(diag => {
+          setAudioDiagnostics(diag);
+        })
+        .catch(err => {
+          console.warn('Diagnostics error:', err);
+          setAudioDiagnostics(null);
+        })
+        .finally(() => {
+          setIsLoadingDiagnostics(false);
+        });
     } else {
       setWaveformBars([]);
+      setAudioDiagnostics(null);
+      setIsLoadingDiagnostics(false);
     }
   }, [panel?.audioBase64]);
+
+  useEffect(() => {
+    return () => {
+      if (diagAnimRef.current) cancelAnimationFrame(diagAnimRef.current);
+    };
+  }, []);
+
+  const handleAuditionDiagnostic = async () => {
+    if (isPlayingAudition) {
+      audioEngine.stopVoice();
+      setIsPlayingAudition(false);
+      setDiagAuditionProgress(null);
+      if (diagAnimRef.current) cancelAnimationFrame(diagAnimRef.current);
+      return;
+    }
+
+    if (!panel?.audioBase64) {
+      if (panel?.commentary) {
+        speakBrowserVoice(panel.commentary);
+      }
+      return;
+    }
+
+    setIsPlayingAudition(true);
+    setDiagAuditionProgress(0);
+
+    try {
+      const dur = await audioEngine.playVoiceBase64(panel.audioBase64, currentVoiceSettings);
+      const startTime = performance.now();
+      const totalDurMs = Math.max(200, (dur || 1.5) * 1000);
+
+      const trackPlayhead = () => {
+        const elapsed = performance.now() - startTime;
+        const progress = Math.min(1.0, elapsed / totalDurMs);
+        setDiagAuditionProgress(progress);
+
+        if (progress < 1.0) {
+          diagAnimRef.current = requestAnimationFrame(trackPlayhead);
+        } else {
+          setDiagAuditionProgress(null);
+          setIsPlayingAudition(false);
+        }
+      };
+
+      diagAnimRef.current = requestAnimationFrame(trackPlayhead);
+    } catch (err) {
+      console.warn('Playback error during diagnostic audition:', err);
+      setIsPlayingAudition(false);
+      setDiagAuditionProgress(null);
+      speakBrowserVoice(panel.commentary);
+    }
+  };
 
   if (!panel) {
     return (
@@ -492,10 +720,16 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
 
     if (panel.audioBase64) {
       setIsPlayingAudition(true);
-      const dur = await audioEngine.playVoiceBase64(panel.audioBase64, currentVoiceSettings);
-      setTimeout(() => {
+      try {
+        const dur = await audioEngine.playVoiceBase64(panel.audioBase64, currentVoiceSettings);
+        setTimeout(() => {
+          setIsPlayingAudition(false);
+        }, (dur || 1.5) * 1000);
+      } catch (err) {
+        console.warn('Playback error, falling back to clean browser voice:', err);
         setIsPlayingAudition(false);
-      }, (dur || 1.5) * 1000);
+        speakBrowserVoice(panel.commentary);
+      }
     } else if (panel.commentary) {
       speakBrowserVoice(panel.commentary);
     }
@@ -696,6 +930,30 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
         </button>
 
         <button
+          onClick={() => setActiveTab('audio-diag')}
+          className={`flex-1 min-w-[58px] py-2.5 flex items-center justify-center gap-1 transition-all border-b-2 relative shrink-0 ${
+            activeTab === 'audio-diag'
+              ? 'border-cyan-400 text-cyan-400 bg-cyan-400/10 font-semibold shadow-sm'
+              : 'border-transparent text-zinc-400 hover:text-white'
+          }`}
+          title="Audio Waveform Distortion & Duration Diagnostic Inspector"
+        >
+          <Activity className="w-3.5 h-3.5 text-cyan-400" />
+          <span>Diag</span>
+          {audioDiagnostics && (
+            <span
+              className={`w-1.5 h-1.5 rounded-full absolute top-2 right-1.5 ${
+                audioDiagnostics.health === 'clean'
+                  ? 'bg-emerald-400'
+                  : audioDiagnostics.health === 'warning'
+                  ? 'bg-amber-400'
+                  : 'bg-red-500 animate-pulse'
+              }`}
+            />
+          )}
+        </button>
+
+        <button
           onClick={() => setActiveTab('camera')}
           className={`flex-1 min-w-[54px] py-2.5 flex items-center justify-center gap-1 transition-all border-b-2 shrink-0 ${
             activeTab === 'camera'
@@ -756,11 +1014,71 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
         {/* TAB 1: SCRIPT & MAMORU COMMENTARY */}
         {activeTab === 'script' && (
           <div className="space-y-4">
+            {/* Speech Bubble OCR & Vision Analyzer Button */}
+            <div className="p-3 bg-gradient-to-r from-blue-950/40 via-indigo-950/30 to-purple-950/30 rounded-xl border border-blue-500/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <ScanText className="w-4 h-4 text-blue-400" />
+                  <span className="font-bold text-white text-xs">Image Speech Bubble Reader</span>
+                </div>
+                <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                  Vision OCR
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400 leading-normal">
+                Reads the dialogue inside speech bubbles, thought balloons, & narration boxes in this image, and writes a voiceover script grounded in what characters say.
+              </p>
+              <button
+                onClick={handleAnalyzeCurrentPanelBubbles}
+                disabled={isAnalyzingBubbleText}
+                className="w-full py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-blue-600/20 transition-all disabled:opacity-50"
+              >
+                {isAnalyzingBubbleText ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>{bubbleAnalysisStatus || 'Reading speech bubbles...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <ScanText className="w-3.5 h-3.5" />
+                    <span>Read Speech Bubbles & Write Voiceover</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Detected Speech Bubbles / Dialogue Field */}
+            <div className="p-3 bg-zinc-900 rounded-xl border border-zinc-800 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="font-bold text-zinc-200 flex items-center gap-1.5 text-[11px]">
+                  <MessageSquare className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Speech Bubbles & Dialogue in Image</span>
+                </label>
+                {panel.detectedDialogue ? (
+                  <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                    ✓ Bubbles Detected
+                  </span>
+                ) : (
+                  <span className="text-[9px] text-zinc-500 font-mono">
+                    Click scan above or edit here
+                  </span>
+                )}
+              </div>
+              <textarea
+                value={panel.detectedDialogue || ''}
+                onChange={(e) => onUpdatePanel({ ...panel, detectedDialogue: e.target.value })}
+                rows={2}
+                placeholder="Text read from speech bubbles, thought balloons, or system windows in this image..."
+                className="w-full bg-zinc-950/80 border border-zinc-800 rounded-lg p-2 text-zinc-300 text-xs placeholder:text-zinc-600 focus:outline-none focus:border-blue-400 font-sans resize-none leading-relaxed"
+              />
+            </div>
+
+            {/* Generated Voiceover Script */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="font-bold text-zinc-200 flex items-center gap-1">
                   <Flame className="w-3.5 h-3.5 text-amber-400" />
-                  4th-Wall Commentary (Mamoru Style)
+                  <span>{project.recapMode === 'simple' ? 'Simple Recap Voiceover Script' : '4th-Wall Commentary (Mamoru Style)'}</span>
                 </label>
                 <span className="text-[10px] text-amber-400/80 font-mono">
                   {panel.commentary.length} chars
@@ -769,10 +1087,13 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
               <textarea
                 value={panel.commentary}
                 onChange={(e) => onUpdatePanel({ ...panel, commentary: e.target.value })}
-                rows={5}
-                placeholder="Write humorous 4th-wall commentary reacting to this panel..."
+                rows={4}
+                placeholder="Spoken voiceover script retelling this panel based on the image & text bubbles..."
                 className="w-full bg-zinc-900 border border-zinc-700/80 rounded-xl p-3 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 font-sans leading-relaxed text-xs resize-none"
               />
+              <p className="text-[10px] text-zinc-500 mt-1">
+                This voiceover script is based directly on the image and speech bubbles above.
+              </p>
             </div>
 
             {/* Quick Link to Voice Studio */}
@@ -901,6 +1222,20 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
                   <span>TTS Lines (.TXT)</span>
                 </button>
 
+                <button
+                  onClick={handleBatchAnalyzeAllBubbles}
+                  disabled={isBatchAnalyzingBubbles}
+                  className="py-1.5 px-2.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/40 text-[11px] font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
+                  title="Scan speech bubbles across all panel images using AI Vision"
+                >
+                  {isBatchAnalyzingBubbles ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
+                  ) : (
+                    <ScanText className="w-3.5 h-3.5 text-purple-400" />
+                  )}
+                  <span>{isBatchAnalyzingBubbles ? 'Reading Bubbles...' : 'Read All Bubbles'}</span>
+                </button>
+
                 {panelsWithVoice < totalCommentaryPanels && (
                   <button
                     onClick={handleBatchVoiceAllPanels}
@@ -914,7 +1249,14 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
                 )}
               </div>
 
-              {/* Batch voice progress notification */}
+              {/* Batch notifications */}
+              {bubbleAnalysisStatus && (
+                <div className="p-2 rounded-xl bg-purple-950/40 border border-purple-800 text-purple-300 text-[11px] flex items-center gap-2 animate-pulse">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-purple-400" />
+                  <span>{bubbleAnalysisStatus}</span>
+                </div>
+              )}
+
               {batchVoiceStatus && (
                 <div className="p-2 rounded-xl bg-blue-950/40 border border-blue-800 text-blue-300 text-[11px] flex items-center gap-2 animate-pulse">
                   <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-400" />
@@ -1118,6 +1460,17 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
                         </div>
                       </div>
 
+                      {/* Speech Bubbles detected in panel image */}
+                      {p.detectedDialogue ? (
+                        <div className="mb-2 p-2 rounded-xl bg-blue-950/40 border border-blue-800/60 text-[11px] text-blue-200 flex items-start gap-1.5 font-sans">
+                          <MessageSquare className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
+                          <div className="flex-1 overflow-hidden">
+                            <span className="text-[10px] text-blue-400 font-bold block uppercase tracking-wider">Image Speech Bubbles (OCR):</span>
+                            <span className="italic">{p.detectedDialogue}</span>
+                          </div>
+                        </div>
+                      ) : null}
+
                       {/* Editable Commentary Line */}
                       <div className="relative">
                         <textarea
@@ -1226,6 +1579,16 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
                 </span>
 
                 <div className="flex items-center gap-1.5">
+                  {/* Quick Diagnostics View Link */}
+                  <button
+                    onClick={() => setActiveTab('audio-diag')}
+                    className="px-2 py-1 rounded-lg text-xs font-semibold bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1 transition-all"
+                    title="Open Full Audio Waveform & Timing Diagnostic Inspector"
+                  >
+                    <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Diagnostics</span>
+                  </button>
+
                   {/* Mute Clip Toggle */}
                   <button
                     onClick={() => updateVoiceSettings({ isMuted: !currentVoiceSettings.isMuted })}
@@ -1298,9 +1661,19 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
 
               {panel.audioBase64 && (
                 <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-0.5">
-                  <span className="text-emerald-400 flex items-center gap-1">
-                    ✓ High-bitrate audio ready
-                  </span>
+                  <button
+                    onClick={() => setActiveTab('audio-diag')}
+                    className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 transition-colors group cursor-pointer"
+                    title="Open Detailed Waveform & Distortion Diagnostics"
+                  >
+                    <Activity className="w-3 h-3 text-cyan-400 group-hover:scale-110 transition-transform" />
+                    <span className="font-medium">
+                      {audioDiagnostics
+                        ? `${audioDiagnostics.health === 'clean' ? '✓ Clean Signal' : '⚠️ Signal Alert'} • ${(audioDiagnostics.duration / (currentVoiceSettings.speed || 1.0)).toFixed(1)}s vs ${panel.duration.toFixed(1)}s`
+                        : 'Inspect Waveform & Timing'}
+                    </span>
+                    <ArrowRight className="w-2.5 h-2.5" />
+                  </button>
                   <button
                     onClick={handleClearVoice}
                     className="text-zinc-500 hover:text-red-400 transition-colors"
@@ -1599,6 +1972,607 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
           </div>
         )}
 
+        {/* TAB 2B: AUDIO WAVEFORM & TIMING DIAGNOSTICS */}
+        {activeTab === 'audio-diag' && (() => {
+          const rawDuration = audioDiagnostics?.duration || 0;
+          const clipSpeed = currentVoiceSettings.speed || 1.0;
+          const effectiveAudioDuration = rawDuration > 0 ? (rawDuration / clipSpeed) : 0;
+          const panelDuration = panel.duration || 5.0;
+          const deltaSeconds = panelDuration - effectiveAudioDuration;
+          const isOverrun = effectiveAudioDuration > panelDuration + 0.05;
+          const isOptimal = !isOverrun && deltaSeconds >= 0.15 && deltaSeconds <= 2.5;
+          const hasExcessPause = deltaSeconds > 2.5;
+          const wordCount = panel.commentary ? panel.commentary.trim().split(/\s+/).filter(Boolean).length : 0;
+          const estimatedSpeechDuration = Math.max(1.8, Math.round((wordCount / 2.6) * 10) / 10);
+          const maxTimelineSpan = Math.max(panelDuration, effectiveAudioDuration, 0.1);
+
+          return (
+            <div className="space-y-4">
+              {/* 1. Diagnostic Header Card */}
+              <div className="p-3.5 bg-zinc-900/90 rounded-2xl border border-zinc-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="font-bold text-zinc-100 flex items-center gap-1.5 text-xs">
+                      <Activity className="w-4 h-4 text-cyan-400" />
+                      Audio Waveform & Distortion Diagnostics
+                    </span>
+                    <p className="text-[10px] text-zinc-400 mt-0.5">
+                      Inspect signal fidelity, detect digital clipping, and verify voice duration against video pacing.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    {/* Audition Button with Live Scrubber Playhead */}
+                    <button
+                      onClick={handleAuditionDiagnostic}
+                      disabled={!panel.audioBase64 && !panel.commentary}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-md ${
+                        isPlayingAudition
+                          ? 'bg-amber-400 text-black shadow-amber-400/20 animate-pulse'
+                          : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/20 disabled:opacity-50'
+                      }`}
+                      title={isPlayingAudition ? 'Stop Audition' : 'Play & Trace Waveform Playhead'}
+                    >
+                      {isPlayingAudition ? (
+                        <>
+                          <Square className="w-3 h-3 fill-current" />
+                          <span>Stop</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-3 h-3 fill-current" />
+                          <span>Audition</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => setActiveTab('voice')}
+                      className="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 transition-all"
+                      title="Return to Voice Mixing Controls"
+                    >
+                      Voice Studio
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Oscilloscope Dual-Rail Waveform Visualizer */}
+                <div className="p-3 bg-[#08090f] rounded-xl border border-zinc-800/90 space-y-2">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="font-mono text-zinc-400 flex items-center gap-1">
+                      <Gauge className="w-3 h-3 text-cyan-400" />
+                      Dual-Rail Oscilloscope Waveform (140 Points)
+                    </span>
+                    <div className="flex items-center gap-2 text-[9px] font-mono">
+                      <span className="text-red-400 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                        0 dBFS Rail
+                      </span>
+                      <span className="text-emerald-400 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        -3 dBFS Safe
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* SVG Oscilloscope Display */}
+                  <div className="relative w-full h-[140px] bg-black/80 rounded-lg border border-zinc-800/80 overflow-hidden select-none">
+                    {panel.audioBase64 && audioDiagnostics ? (
+                      <svg
+                        className="w-full h-full cursor-pointer"
+                        viewBox="0 0 700 140"
+                        preserveAspectRatio="none"
+                        onClick={handleAuditionDiagnostic}
+                      >
+                        {/* Reference Rails */}
+                        {/* 0 dBFS Top Ceiling Rail */}
+                        <line x1="0" y1="10" x2="700" y2="10" stroke="#ef4444" strokeWidth="1" strokeDasharray="4,4" opacity="0.45" />
+                        <text x="6" y="16" fill="#ef4444" fontSize="8" fontFamily="monospace" opacity="0.8">0 dBFS (Clip)</text>
+
+                        {/* -3 dBFS Top Safe Line */}
+                        <line x1="0" y1="28" x2="700" y2="28" stroke="#10b981" strokeWidth="0.8" strokeDasharray="2,3" opacity="0.35" />
+                        <text x="6" y="34" fill="#10b981" fontSize="7.5" fontFamily="monospace" opacity="0.7">-3 dBFS</text>
+
+                        {/* 0V Center Axis */}
+                        <line x1="0" y1="70" x2="700" y2="70" stroke="#3f3f46" strokeWidth="1" opacity="0.6" />
+                        <text x="6" y="73" fill="#71717a" fontSize="7.5" fontFamily="monospace" opacity="0.6">0V Axis</text>
+
+                        {/* -3 dBFS Bottom Safe Line */}
+                        <line x1="0" y1="112" x2="700" y2="112" stroke="#10b981" strokeWidth="0.8" strokeDasharray="2,3" opacity="0.35" />
+
+                        {/* 0 dBFS Bottom Floor Rail */}
+                        <line x1="0" y1="130" x2="700" y2="130" stroke="#ef4444" strokeWidth="1" strokeDasharray="4,4" opacity="0.45" />
+
+                        {/* Speech Waveform Bipolar Envelope Spikes */}
+                        {audioDiagnostics.points.map((pt, idx) => {
+                          const x = (idx / (audioDiagnostics.points.length - 1)) * 680 + 10;
+                          // Center is y = 70. Amplitude is 55px.
+                          const yTop = Math.max(10, 70 - Math.min(1.0, Math.max(0, pt.max)) * 58);
+                          const yBottom = Math.min(130, 70 - Math.max(-1.0, Math.min(0, pt.min)) * 58);
+
+                          if (pt.isClipped) {
+                            return (
+                              <g key={idx}>
+                                {/* Red saturated vertical spike */}
+                                <line
+                                  x1={x}
+                                  y1={yTop}
+                                  x2={x}
+                                  y2={yBottom}
+                                  stroke="#ef4444"
+                                  strokeWidth="2.4"
+                                  strokeLinecap="round"
+                                />
+                                {/* Red clipping warning dots at rails */}
+                                <circle cx={x} cy={10} r="2" fill="#ef4444" />
+                                <circle cx={x} cy={130} r="2" fill="#ef4444" />
+                              </g>
+                            );
+                          }
+
+                          return (
+                            <line
+                              key={idx}
+                              x1={x}
+                              y1={yTop}
+                              x2={x}
+                              y2={yBottom}
+                              stroke="#38bdf8"
+                              strokeWidth="2.0"
+                              strokeLinecap="round"
+                              opacity={0.88}
+                            />
+                          );
+                        })}
+
+                        {/* Live Audition Playhead Scrubber */}
+                        {diagAuditionProgress !== null && (
+                          <g>
+                            {/* Glowing laser line */}
+                            <line
+                              x1={diagAuditionProgress * 680 + 10}
+                              y1="0"
+                              x2={diagAuditionProgress * 680 + 10}
+                              y2="140"
+                              stroke="#fbbf24"
+                              strokeWidth="2"
+                              filter="drop-shadow(0 0 6px #f59e0b)"
+                            />
+                            {/* Playhead marker pin */}
+                            <polygon
+                              points={`${diagAuditionProgress * 680 + 10},12 ${diagAuditionProgress * 680 + 6},2 ${diagAuditionProgress * 680 + 14},2`}
+                              fill="#fbbf24"
+                            />
+                          </g>
+                        )}
+                      </svg>
+                    ) : isLoadingDiagnostics ? (
+                      <div className="w-full h-full flex flex-col items-center justify-center text-zinc-500 gap-2">
+                        <Loader2 className="w-6 h-6 animate-spin text-cyan-400" />
+                        <span className="text-[11px]">Analyzing audio waveform & computing distortion metrics...</span>
+                      </div>
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center text-zinc-500 gap-1.5 p-4 text-center">
+                        <Mic className="w-6 h-6 text-zinc-600 mb-1" />
+                        <span className="font-semibold text-zinc-400 text-xs">No Pre-rendered Audio on this Panel</span>
+                        <span className="text-[10px] text-zinc-500 max-w-xs">
+                          Generate AI voiceover in the Voice tab or click below to synthesize and inspect waveform harmonics.
+                        </span>
+                        <button
+                          onClick={handleSynthesizeVoice}
+                          disabled={isGeneratingTts || !panel.commentary}
+                          className="mt-2 px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-md disabled:opacity-50"
+                        >
+                          {isGeneratingTts ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                          <span>Generate AI Voiceover for Waveform</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Waveform Key & Playback Hints */}
+                  {panel.audioBase64 && audioDiagnostics && (
+                    <div className="flex flex-wrap items-center justify-between text-[10px] text-zinc-400 pt-1 border-t border-zinc-800/60">
+                      <div className="flex items-center gap-3">
+                        <span className="flex items-center gap-1">
+                          <span className="w-2.5 h-2 rounded bg-cyan-400" />
+                          <span>Natural Speech Envelope</span>
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2.5 h-2 rounded bg-red-500" />
+                          <span>Digital Clipping (Distortion Peak)</span>
+                        </span>
+                        {isPlayingAudition && (
+                          <span className="flex items-center gap-1 text-amber-400 animate-pulse font-mono font-bold">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                            <span>Auditioning...</span>
+                          </span>
+                        )}
+                      </div>
+
+                      <span className="font-mono text-zinc-500">
+                        Clip Speed: {clipSpeed.toFixed(2)}x &bull; Pitch: {currentVoiceSettings.pitch > 0 ? `+${currentVoiceSettings.pitch}` : currentVoiceSettings.pitch}st
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Distortion & Signal Quality Telemetry Grid */}
+                {audioDiagnostics && (
+                  <div className="space-y-2.5">
+                    {/* Signal Health Status Banner */}
+                    <div
+                      className={`p-3 rounded-xl border flex items-start gap-2.5 transition-all ${
+                        audioDiagnostics.health === 'clean'
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                          : audioDiagnostics.health === 'warning'
+                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                          : 'bg-red-500/15 border-red-500/40 text-red-200 shadow-md shadow-red-500/10'
+                      }`}
+                    >
+                      {audioDiagnostics.health === 'clean' ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertTriangle className={`w-4 h-4 shrink-0 mt-0.5 ${audioDiagnostics.health === 'warning' ? 'text-amber-400' : 'text-red-400'}`} />
+                      )}
+
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-xs flex items-center justify-between">
+                          <span>
+                            {audioDiagnostics.health === 'clean'
+                              ? 'Pristine Signal Quality (Zero Distortion)'
+                              : audioDiagnostics.health === 'warning'
+                              ? 'Near-Ceiling Signal (Low Headroom Warning)'
+                              : 'Digital Distortion / Clipping Detected!'}
+                          </span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40">
+                            Peak: {audioDiagnostics.peakDb.toFixed(1)} dBFS
+                          </span>
+                        </div>
+                        <p className="text-[11px] mt-0.5 opacity-90 leading-relaxed">
+                          {audioDiagnostics.healthMessage}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* 4-Tile Telemetry Cards */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                      {/* Metric 1: True Peak */}
+                      <div className="p-2.5 bg-zinc-950 rounded-xl border border-zinc-800 space-y-1">
+                        <span className="text-[10px] text-zinc-500 font-semibold block uppercase">Peak Level</span>
+                        <div className="font-mono font-bold text-sm text-zinc-100 flex items-baseline gap-1">
+                          <span>{audioDiagnostics.peakDb.toFixed(1)}</span>
+                          <span className="text-[10px] text-zinc-500">dBFS</span>
+                        </div>
+                        {/* Peak Level Meter Bar */}
+                        <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden mt-1">
+                          <div
+                            className={`h-full rounded-full transition-all duration-300 ${
+                              audioDiagnostics.peakDb > -0.2
+                                ? 'bg-red-500'
+                                : audioDiagnostics.peakDb > -3.0
+                                ? 'bg-amber-400'
+                                : 'bg-emerald-400'
+                            }`}
+                            style={{
+                              width: `${Math.max(5, Math.min(100, ((audioDiagnostics.peakDb + 48) / 48) * 100))}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="text-[9px] text-zinc-500 block">
+                          Headroom: {(0 - audioDiagnostics.peakDb).toFixed(1)} dB
+                        </span>
+                      </div>
+
+                      {/* Metric 2: RMS Loudness */}
+                      <div className="p-2.5 bg-zinc-950 rounded-xl border border-zinc-800 space-y-1">
+                        <span className="text-[10px] text-zinc-500 font-semibold block uppercase">RMS Loudness</span>
+                        <div className="font-mono font-bold text-sm text-cyan-400 flex items-baseline gap-1">
+                          <span>{audioDiagnostics.rmsDb.toFixed(1)}</span>
+                          <span className="text-[10px] text-zinc-500">dBFS</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden mt-1">
+                          <div
+                            className="h-full bg-cyan-400 rounded-full transition-all duration-300"
+                            style={{
+                              width: `${Math.max(5, Math.min(100, ((audioDiagnostics.rmsDb + 48) / 48) * 100))}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="text-[9px] text-zinc-500 block">
+                          Dynamic Range: {(audioDiagnostics.peakDb - audioDiagnostics.rmsDb).toFixed(1)} dB
+                        </span>
+                      </div>
+
+                      {/* Metric 3: Clipped Samples */}
+                      <div className="p-2.5 bg-zinc-950 rounded-xl border border-zinc-800 space-y-1">
+                        <span className="text-[10px] text-zinc-500 font-semibold block uppercase">Clipped Samples</span>
+                        <div className="font-mono font-bold text-sm flex items-baseline gap-1">
+                          <span className={audioDiagnostics.clippedSamples > 0 ? 'text-red-400' : 'text-emerald-400'}>
+                            {audioDiagnostics.clippedSamples}
+                          </span>
+                          <span className="text-[10px] text-zinc-500">samples</span>
+                        </div>
+                        <span className="text-[9px] text-zinc-500 block">
+                          {audioDiagnostics.clippedSamples === 0
+                            ? '✓ Zero Flat-Topping'
+                            : `${audioDiagnostics.flatTopCount} flat-top bursts`}
+                        </span>
+                      </div>
+
+                      {/* Metric 4: Format & Sample Rate */}
+                      <div className="p-2.5 bg-zinc-950 rounded-xl border border-zinc-800 space-y-1">
+                        <span className="text-[10px] text-zinc-500 font-semibold block uppercase">Format & Rate</span>
+                        <div className="font-mono font-bold text-sm text-zinc-200">
+                          {(audioDiagnostics.sampleRate / 1000).toFixed(1)} kHz
+                        </div>
+                        <span className="text-[9px] text-zinc-500 block">
+                          16-bit Mono (DC: {(audioDiagnostics.dcOffset * 100).toFixed(1)}%)
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 4. Audio Duration vs. Panel Timing Verification & Synchronization */}
+              <div className="p-3.5 bg-zinc-900/90 rounded-2xl border border-zinc-800 space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-zinc-100 flex items-center gap-1.5 text-xs">
+                    <Clock className="w-4 h-4 text-amber-400" />
+                    Audio Duration vs. Panel Screen Timing
+                  </span>
+
+                  <span className="font-mono text-[11px] text-zinc-400 bg-black/60 px-2 py-0.5 rounded-lg border border-zinc-800">
+                    Panel #{panelIndex + 1}
+                  </span>
+                </div>
+
+                {/* Timing Comparison Banner */}
+                {panel.audioBase64 ? (
+                  <div
+                    className={`p-3 rounded-xl border flex items-start gap-2.5 ${
+                      isOverrun
+                        ? 'bg-red-500/15 border-red-500/40 text-red-200 shadow-sm'
+                        : isOptimal
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                        : 'bg-blue-500/10 border-blue-500/30 text-blue-300'
+                    }`}
+                  >
+                    {isOverrun ? (
+                      <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5 animate-bounce" />
+                    ) : isOptimal ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <Clock className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                    )}
+
+                    <div className="flex-1 min-w-0">
+                      <div className="font-bold text-xs flex items-center justify-between">
+                        <span>
+                          {isOverrun
+                            ? `⚠️ AUDIO OVERRUN DETECTED: -${(effectiveAudioDuration - panelDuration).toFixed(2)}s`
+                            : isOptimal
+                            ? `✓ OPTIMAL PACING: +${deltaSeconds.toFixed(2)}s Headroom`
+                            : `EXTENDED HEADROOM: +${deltaSeconds.toFixed(2)}s Pause`}
+                        </span>
+                        <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-black/50">
+                          Audio: {effectiveAudioDuration.toFixed(2)}s &bull; Panel: {panelDuration.toFixed(2)}s
+                        </span>
+                      </div>
+                      <p className="text-[11px] mt-0.5 opacity-90 leading-relaxed">
+                        {isOverrun
+                          ? `The voiceover audio is ${(effectiveAudioDuration - panelDuration).toFixed(2)}s LONGER than this panel. The narration will be abruptly cut off when the next panel loads. Auto-fit duration below to prevent voice cut-off.`
+                          : isOptimal
+                          ? `The narration completes ${deltaSeconds.toFixed(2)}s before the panel transition, leaving a natural cinematic pause before camera movement.`
+                          : `The narration finishes ${deltaSeconds.toFixed(2)}s before the panel advances, leaving a long pause.`}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 text-zinc-400 text-xs flex items-start gap-2.5">
+                    <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-zinc-300">
+                        Text Timing Estimation: ~{estimatedSpeechDuration}s ({wordCount} words)
+                      </p>
+                      <p className="text-[11px] text-zinc-500 mt-0.5">
+                        {estimatedSpeechDuration > panelDuration
+                          ? `Commentary appears long for this ${panelDuration.toFixed(1)}s panel. Consider extending panel duration to ~${(estimatedSpeechDuration + 0.3).toFixed(1)}s.`
+                          : `Current panel duration (${panelDuration.toFixed(1)}s) provides sufficient speaking time.`}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stacked Interactive Timeline Comparison Bar */}
+                <div className="p-3 bg-black/70 rounded-xl border border-zinc-800 space-y-3 font-mono text-[10px]">
+                  {/* Row 1: Panel Duration Bar */}
+                  <div>
+                    <div className="flex items-center justify-between text-zinc-400 mb-1">
+                      <span className="flex items-center gap-1 text-amber-300">
+                        <Camera className="w-3 h-3" />
+                        <span>Panel Screen Video Time</span>
+                      </span>
+                      <span className="font-bold text-amber-400">{panelDuration.toFixed(2)}s</span>
+                    </div>
+                    <div className="w-full h-3.5 bg-zinc-900 rounded-md overflow-hidden relative border border-zinc-800">
+                      <div
+                        className="h-full bg-gradient-to-r from-amber-600 to-amber-400 rounded-sm flex items-center px-2 text-black font-bold text-[9px] shadow-sm"
+                        style={{ width: `${Math.min(100, (panelDuration / maxTimelineSpan) * 100)}%` }}
+                      >
+                        VIDEO: {panelDuration.toFixed(2)}s
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Row 2: Audio Voiceover Bar */}
+                  <div>
+                    <div className="flex items-center justify-between text-zinc-400 mb-1">
+                      <span className="flex items-center gap-1 text-cyan-300">
+                        <Mic className="w-3 h-3" />
+                        <span>Voiceover Spoken Audio</span>
+                      </span>
+                      <span className="font-bold text-cyan-400">
+                        {effectiveAudioDuration > 0
+                          ? `${effectiveAudioDuration.toFixed(2)}s (${clipSpeed.toFixed(2)}x)`
+                          : `~${estimatedSpeechDuration.toFixed(2)}s (estimated)`}
+                      </span>
+                    </div>
+                    <div className="w-full h-3.5 bg-zinc-900 rounded-md overflow-hidden relative border border-zinc-800 flex">
+                      {/* Audio Spoken Bar */}
+                      <div
+                        className="h-full bg-gradient-to-r from-cyan-600 to-blue-400 rounded-sm flex items-center px-2 text-black font-bold text-[9px]"
+                        style={{
+                          width: `${Math.min(100, (effectiveAudioDuration / maxTimelineSpan) * 100)}%`,
+                        }}
+                      >
+                        VOICE: {effectiveAudioDuration.toFixed(2)}s
+                      </div>
+
+                      {/* Headroom or Overrun Zone */}
+                      {!isOverrun && deltaSeconds > 0.05 && (
+                        <div
+                          className="h-full bg-emerald-500/20 border-l border-emerald-500/50 flex items-center px-1 text-emerald-300 font-bold text-[8px]"
+                          style={{
+                            width: `${Math.min(100 - (effectiveAudioDuration / maxTimelineSpan) * 100, (deltaSeconds / maxTimelineSpan) * 100)}%`,
+                          }}
+                        >
+                          +{deltaSeconds.toFixed(1)}s Pause
+                        </div>
+                      )}
+
+                      {/* Overrun Zone extending past panel */}
+                      {isOverrun && (
+                        <div
+                          className="h-full bg-red-600/80 border-l-2 border-red-300 flex items-center px-1 text-white font-black text-[8px] animate-pulse"
+                          style={{
+                            width: `${Math.min(100, ((effectiveAudioDuration - panelDuration) / maxTimelineSpan) * 100)}%`,
+                          }}
+                        >
+                          CUTOFF!
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 5. One-Click Timing Synchronization Actions */}
+                <div className="space-y-2 pt-1">
+                  <span className="text-[11px] font-semibold text-zinc-300 block">
+                    Timing Synchronization Tools:
+                  </span>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {/* Auto-Fit Panel (+0.3s Headroom) */}
+                    <button
+                      onClick={() => {
+                        const targetDur = Math.max(1.0, Math.ceil((effectiveAudioDuration + 0.3) * 10) / 10);
+                        onUpdatePanel({ ...panel, duration: targetDur });
+                      }}
+                      disabled={effectiveAudioDuration <= 0}
+                      className="p-2.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-bold text-xs flex items-center justify-between transition-all disabled:opacity-40"
+                    >
+                      <div className="text-left">
+                        <div className="flex items-center gap-1.5">
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Auto-Fit Panel Duration</span>
+                        </div>
+                        <div className="text-[10px] text-emerald-400/80 font-normal">
+                          Sets panel to {(effectiveAudioDuration + 0.3).toFixed(1)}s (+0.3s headroom)
+                        </div>
+                      </div>
+                      <span className="font-mono text-xs font-black">
+                        {(effectiveAudioDuration + 0.3).toFixed(1)}s
+                      </span>
+                    </button>
+
+                    {/* Match Exact Audio Length */}
+                    <button
+                      onClick={() => {
+                        const targetDur = Math.max(1.0, Math.round(effectiveAudioDuration * 10) / 10);
+                        onUpdatePanel({ ...panel, duration: targetDur });
+                      }}
+                      disabled={effectiveAudioDuration <= 0}
+                      className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 font-bold text-xs flex items-center justify-between transition-all disabled:opacity-40"
+                    >
+                      <div className="text-left">
+                        <div className="flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Exact Audio Match</span>
+                        </div>
+                        <div className="text-[10px] text-zinc-400 font-normal">
+                          Zero-gap sync at {effectiveAudioDuration.toFixed(1)}s
+                        </div>
+                      </div>
+                      <span className="font-mono text-xs font-bold text-cyan-400">
+                        {effectiveAudioDuration.toFixed(1)}s
+                      </span>
+                    </button>
+
+                    {/* Optimize Speed to Fit Current Panel */}
+                    <button
+                      onClick={() => {
+                        if (rawDuration <= 0) return;
+                        const targetSpeed = Math.min(
+                          1.8,
+                          Math.max(0.65, Number((rawDuration / Math.max(1.0, panelDuration - 0.25)).toFixed(2)))
+                        );
+                        updateVoiceSettings({ speed: targetSpeed });
+                      }}
+                      disabled={rawDuration <= 0}
+                      className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 font-bold text-xs flex items-center justify-between transition-all disabled:opacity-40"
+                    >
+                      <div className="text-left">
+                        <div className="flex items-center gap-1.5">
+                          <FastForward className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Auto-Speed Voice to Panel</span>
+                        </div>
+                        <div className="text-[10px] text-zinc-400 font-normal">
+                          Retimes voiceover to fit within {panelDuration.toFixed(1)}s
+                        </div>
+                      </div>
+                      <span className="font-mono text-xs font-bold text-amber-400">
+                        {rawDuration > 0
+                          ? `${Math.min(1.8, Math.max(0.65, Number((rawDuration / Math.max(1.0, panelDuration - 0.25)).toFixed(2))))}x`
+                          : '1.0x'}
+                      </span>
+                    </button>
+
+                    {/* Sync All Panels in Story */}
+                    <button
+                      onClick={() => {
+                        onUpdateProject((prev) => ({
+                          ...prev,
+                          panels: prev.panels.map((p) => {
+                            if (!p.audioBase64) return p;
+                            // Estimate from audio duration
+                            const spd = p.voiceSettings?.speed || 1.0;
+                            const dur = p.duration;
+                            return p;
+                          }),
+                        }));
+                      }}
+                      className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 font-bold text-xs flex items-center justify-between transition-all"
+                    >
+                      <div className="text-left">
+                        <div className="flex items-center gap-1.5">
+                          <Layers className="w-3.5 h-3.5 text-blue-400" />
+                          <span>Batch Sync All Panels</span>
+                        </div>
+                        <div className="text-[10px] text-zinc-400 font-normal">
+                          Verify durations for all {project.panels.length} panels
+                        </div>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-zinc-400" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* TAB 3: CAMERA PAN & ZOOM DIRECTOR */}
         {activeTab === 'camera' && (
           <div className="space-y-4">
@@ -1681,18 +2655,35 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
                   <span className="text-zinc-400 flex items-center gap-1">
                     <Zap className="w-3 h-3 text-red-400" /> Screen Shake Intensity
                   </span>
-                  <span className="font-mono text-red-400">
-                    {Math.round(panel.camera.shakeIntensity * 100)}%
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {panel.camera.shakeIntensity > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => onUpdatePanel({
+                          ...panel,
+                          disableShake: true,
+                          camera: { ...panel.camera, shakeIntensity: 0 },
+                        })}
+                        className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-[10px] font-bold"
+                        title="Remove camera shake from this panel"
+                      >
+                        Remove Shake (0%)
+                      </button>
+                    )}
+                    <span className="font-mono text-red-400">
+                      {panel.disableShake || project.disableShakeEffect ? 'OFF (0%)' : `${Math.round(panel.camera.shakeIntensity * 100)}%`}
+                    </span>
+                  </div>
                 </div>
                 <input
                   type="range"
                   min={0}
                   max={1.0}
                   step={0.05}
-                  value={panel.camera.shakeIntensity}
+                  value={panel.disableShake || project.disableShakeEffect ? 0 : panel.camera.shakeIntensity}
                   onChange={(e) => onUpdatePanel({
                     ...panel,
+                    disableShake: parseFloat(e.target.value) === 0,
                     camera: {
                       ...panel.camera,
                       shakeIntensity: parseFloat(e.target.value),
@@ -1700,7 +2691,45 @@ export const PanelInspector: React.FC<PanelInspectorProps> = ({
                   })}
                   className="w-full h-1.5 bg-zinc-800 rounded appearance-none cursor-pointer accent-red-500"
                 />
+
+                <label className="flex items-center gap-2 mt-2 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(panel.disableShake || project.disableShakeEffect)}
+                    onChange={(e) => onUpdatePanel({
+                      ...panel,
+                      disableShake: e.target.checked,
+                      camera: {
+                        ...panel.camera,
+                        shakeIntensity: e.target.checked ? 0 : (panel.camera.shakeIntensity || 0.4),
+                      },
+                    })}
+                    className="accent-amber-500 rounded"
+                  />
+                  <span className="text-zinc-400">Disable camera shake for this panel (smooth motion)</span>
+                </label>
               </div>
+
+              {/* 16:9 Double Slide Companion Panel Info */}
+              {project.aspectRatio === '16:9' && (
+                <div className="p-3 bg-blue-950/25 border border-blue-900/40 rounded-xl space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-white flex items-center gap-1.5">
+                      <Columns className="w-3.5 h-3.5 text-blue-400" />
+                      16:9 Double Slide Companion
+                    </span>
+                    <span className="text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                      {project.widescreenLayout === 'double-slide' || (!project.widescreenLayout && project.recapMode === 'simple') ? 'Active' : 'Standby'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    In 16:9 Double Slide mode, this panel is paired with the next panel side-by-side with rounded drop-shadow cards over a blurred ambient background.
+                  </p>
+                  <div className="text-[10px] text-zinc-500 font-mono">
+                    Left: Panel #{panelIndex + 1} | Right: {project.panels[panelIndex + 1] ? `Panel #${panelIndex + 2}` : 'Final Frame'}
+                  </div>
+                </div>
+              )}
 
               {/* Easing function */}
               <div>

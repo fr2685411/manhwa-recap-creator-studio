@@ -14,13 +14,25 @@ import {
   Wand2,
   Layers,
   Zap,
-  Volume2
+  Volume2,
+  Download,
+  Search,
+  RefreshCw,
+  Sliders,
+  Check
 } from 'lucide-react';
 import { Panel, ProjectSettings } from '../types/manhwa';
 import { extractPagesFromPdf, ExtractedPage } from '../services/pdfReader';
-import { requestChapterGenerationFromImages, requestTtsAudio } from '../services/geminiClient';
+import { 
+  requestChapterGenerationFromImages, 
+  requestSegmentedChapterGeneration,
+  requestDetectPremiseFromImages,
+  DetectedPremiseData,
+  requestTtsAudio 
+} from '../services/geminiClient';
 import { localAiEngine } from '../services/localAiEngine';
 import { SAMPLE_PROJECTS } from '../data/sampleChapters';
+import { audioEngine } from '../services/audioEngine';
 
 interface AutoRecapWizardModalProps {
   isOpen: boolean;
@@ -40,8 +52,14 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
   const [chapterTitle, setChapterTitle] = useState('Reincarnated as SSS-Rank Hunter');
   const [humorTone, setHumorTone] = useState('Unhinged Mamoru (Comedic, 4th Wall, Meme-heavy, roasts tropes)');
   const [autoGenerateVoice, setAutoGenerateVoice] = useState(true);
+  const [disableShake, setDisableShake] = useState(false);
   const [userNotes, setUserNotes] = useState('Roast the tropes, call out the overpowered main character, and question the artist\'s anatomy.');
   
+  // AI Premise Detection & Tweaks state
+  const [isDetectingPremise, setIsDetectingPremise] = useState(false);
+  const [detectedPremiseData, setDetectedPremiseData] = useState<DetectedPremiseData | null>(null);
+  const [generatedPanelsPreview, setGeneratedPanelsPreview] = useState<Panel[] | null>(null);
+
   // Progress states
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusStep, setStatusStep] = useState<string>('');
@@ -146,7 +164,128 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
     setExtractedPanels((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Run End-to-End AI Recap Generation from the images
+  // Auto-detect manhwa premise, characters, and chapter context from sample images
+  const handleAutoDetectPremise = async () => {
+    const activePanels = extractedPanels.filter((p) => p.selected);
+    if (activePanels.length === 0) {
+      setError('Please upload or select at least 1 image first to detect the story premise.');
+      return;
+    }
+
+    setIsDetectingPremise(true);
+    setError(null);
+
+    try {
+      const sample = activePanels.slice(0, 4).map((p) => ({
+        base64: p.dataUrl,
+        mimeType: p.dataUrl.startsWith('data:image/png') ? 'image/png' : 'image/jpeg',
+      }));
+
+      const detected = await requestDetectPremiseFromImages(sample);
+      setDetectedPremiseData(detected);
+
+      if (detected.detectedTitle && detected.detectedTitle.trim()) {
+        setChapterTitle(detected.detectedTitle.trim());
+      }
+
+      const noteParts: string[] = [];
+      if (detected.premise) {
+        noteParts.push(`Premise: ${detected.premise}`);
+      }
+      if (detected.characters && detected.characters.length > 0) {
+        noteParts.push(`Characters: ${detected.characters.join(', ')}`);
+      }
+      if (detected.currentSituation) {
+        noteParts.push(`Current Scene: ${detected.currentSituation}`);
+      }
+      if (detected.suggestedDirectorTweaks) {
+        noteParts.push(`Director Tweaks: ${detected.suggestedDirectorTweaks}`);
+      }
+
+      setUserNotes(noteParts.join('\n\n'));
+    } catch (err: any) {
+      console.warn('Premise detection warning:', err);
+      setError(err.message || 'Could not auto-detect premise. You can manually enter notes below.');
+    } finally {
+      setIsDetectingPremise(false);
+    }
+  };
+
+  // Export all voiceover script lines into a single clean text file (.txt)
+  const handleExportVoiceLinesTxt = (panelsToExport: Panel[]) => {
+    if (!panelsToExport || panelsToExport.length === 0) return;
+
+    let content = `========================================================\n`;
+    content += `MANHWA RECAP STORY SCRIPT: ${chapterTitle || 'Chapter Recap'}\n`;
+    content += `Voice Persona: ${voicePersona} | Total Panels: ${panelsToExport.length}\n`;
+    const totalSec = panelsToExport.reduce((s, p) => s + p.duration, 0);
+    content += `Estimated Duration: ~${totalSec.toFixed(1)}s\n`;
+    content += `========================================================\n\n`;
+
+    content += `--- SCENE-BY-SCENE TIMED VOICEOVER SCRIPT ---\n\n`;
+    let accumulated = 0;
+    panelsToExport.forEach((p, idx) => {
+      const startMin = Math.floor(accumulated / 60);
+      const startSec = Math.floor(accumulated % 60).toString().padStart(2, '0');
+      accumulated += p.duration;
+      const endMin = Math.floor(accumulated / 60);
+      const endSec = Math.floor(accumulated % 60).toString().padStart(2, '0');
+
+      content += `[PANEL ${idx + 1}] (${startMin}:${startSec} - ${endMin}:${endSec} | ${p.duration.toFixed(1)}s) - "${p.title}"\n`;
+      if (p.detectedDialogue) {
+        content += `DIALOGUE IN IMAGE: ${p.detectedDialogue}\n`;
+      }
+      content += `VOICEOVER NARRATION:\n"${p.commentary || ''}"\n\n`;
+    });
+
+    content += `\n========================================================\n`;
+    content += `CLEAN TTS-ONLY LINES (FOR ELEVENLABS / EDGE-TTS / KOKORO):\n`;
+    content += `========================================================\n`;
+    panelsToExport.forEach((p) => {
+      if (p.commentary && p.commentary.trim()) {
+        content += `${p.commentary.trim()}\n`;
+      }
+    });
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(chapterTitle || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}_all_voice_lines.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Export merged audio (.wav) combining all synthesized voiceover clips into one single file
+  const handleExportMergedAudio = async (panelsToExport: Panel[]) => {
+    const panelsWithVoice = panelsToExport.filter((p) => p.audioBase64);
+    if (panelsWithVoice.length === 0) {
+      alert('No synthesized voice clips found. Please enable "Synthesize with Gemini TTS" during recap generation.');
+      return;
+    }
+
+    try {
+      setStatusStep('🎵 Merging all panel voiceover audio into one file...');
+      const blob = await audioEngine.exportMergedVoiceoverWav(panelsToExport);
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${(chapterTitle || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}_merged_voiceover.wav`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (err: any) {
+      console.warn('Audio merge error:', err);
+      alert('Could not merge audio: ' + err.message);
+    }
+  };
+
+  // Run End-to-End AI Recap Generation from the images using Segmented Multi-Batch processing
   const handleGenerateRecapVideo = async () => {
     const activePanels = extractedPanels.filter((p) => p.selected);
     if (activePanels.length === 0) {
@@ -156,86 +295,64 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
 
     setIsProcessing(true);
     setError(null);
+    setGeneratedPanelsPreview(null);
 
     try {
-      // Step 1: Send images to active AI engine
-      const engine = localAiEngine.getActiveEngine();
-      setStatusStep(
-        engine === 'local-ollama'
-          ? '🦙 Sending to local Ollama instance on localhost:11434...'
-          : engine === 'in-browser-model'
-          ? '💻 Running in-browser local model via WebGPU...'
-          : '🔍 Analyzing manhwa artwork with Gemini Vision...'
-      );
-
       const visionPayload = activePanels.map((p) => ({
         base64: p.dataUrl,
         mimeType: p.dataUrl.startsWith('data:image/png') ? 'image/png' : 'image/jpeg',
       }));
 
+      // High-precision segmented multimodal generation (3-4 images per segment)
+      const engine = localAiEngine.getActiveEngine();
       let generatedScripts: any[] = [];
+
       if (engine === 'local-ollama' || engine === 'in-browser-model') {
         try {
+          setStatusStep(`🦙 Generating recap using ${engine}...`);
           generatedScripts = await localAiEngine.generateRecapScriptUnified({
             chapterTitle,
             tone: humorTone,
             userNotes,
             panelDescriptions: activePanels.map((_, idx) => `Chapter Page/Panel ${idx + 1}`),
-            images: activePanels.map(p => p.dataUrl),
+            images: activePanels.map((p) => p.dataUrl),
           });
         } catch (localErr: any) {
-          console.warn('Local model generation failed, falling back to Gemini Vision:', localErr);
-          setStatusStep('⚡ Local model hit limit. Falling back to Gemini Vision...');
-          try {
-            generatedScripts = await requestChapterGenerationFromImages({
-              images: visionPayload,
-              chapterTitle,
-              tone: humorTone,
-              userNotes,
-            });
-          } catch (cloudErr) {
-            console.warn('Gemini Vision fallback error, using local script generator:', cloudErr);
-          }
+          console.warn('Local model failed, falling back to Gemini Vision segments:', localErr);
         }
-      } else {
-        try {
-          generatedScripts = await requestChapterGenerationFromImages({
-            images: visionPayload,
-            chapterTitle,
-            tone: humorTone,
-            userNotes,
-          });
-        } catch (cloudErr: any) {
-          console.warn('Gemini Vision API error, falling back to comedic script generator:', cloudErr);
-          setStatusStep('⚡ Generating comedic storyboard scripts...');
-          generatedScripts = await localAiEngine.generateRecapScriptUnified({
-            chapterTitle,
-            tone: humorTone,
-            userNotes,
-            panelDescriptions: activePanels.map((_, idx) => `Chapter Page/Panel ${idx + 1}`),
-            images: activePanels.map(p => p.dataUrl),
-          });
-        }
+      }
+
+      if (generatedScripts.length === 0) {
+        generatedScripts = await requestSegmentedChapterGeneration({
+          images: visionPayload,
+          chapterTitle,
+          tone: humorTone,
+          userNotes,
+          segmentSize: 4, // 4 panels per segment ensures focused OCR & zero generic fluff
+          onProgress: (msg, cur, tot) => {
+            setStatusStep(`[Segment ${cur}/${tot}] ${msg}`);
+          },
+        });
       }
 
       setStatusStep('✍️ Choreographing kinetic camera pan & zoom, punchline SFX, and subtitles...');
 
-      // Step 2: Build complete Panels sequence
+      // Build complete Panels sequence
       const finalPanels: Panel[] = [];
       const isSimpleRecap = humorTone.toLowerCase().includes('simple');
 
       const defaultRoasts = isSimpleRecap ? [
-        `In this chapter, our protagonist finds himself facing the darkest depths of the dungeon, armed only with what seems to be ordinary equipment.`,
-        `Against all odds, the ancient system recognizes his hidden potential, unlocking abilities that turn the tide of the entire battle.`,
-        `The enemies realize too late that they have underestimated someone far beyond their comprehension.`,
-        `With a calm and decisive strike, the trial is conquered, leaving everyone in stunned disbelief.`,
-        `As the dust settles, a new journey begins, setting the stage for what comes next.`,
+        `Here in this scene, our characters advance forward as the situation escalates rapidly.`,
+        `Examining the action carefully, the team encounters high-intensity resistance along the path.`,
+        `With focused determination, our lead pushes forward through the intense corridor engagement.`,
+        `The clash intensifies as each ability is unleashed against the opposing force.`,
+        `Securing the objective, the immediate threat is resolved, setting the stage for what comes next.`,
       ] : [
-        `Chat, look at this! Bro just woke up in an SSS-rank dungeon and thought he had plot armor!`,
-        `Wait, why does this boss look like he's on 500mg of dungeon tren?! Look at bro's posture!`,
-        `Ain't no way bro is actually attempting this. The author completely gave up on game balance!`,
-        `Bro really pulled out the golden artifact like it's Tuesday! Absolutely unhinged!`,
-        `Chat, I am losing my mind. Look at the villains trembling in the background right now!`,
+        `Chat, look at what is happening right here in this scene! Look at that stance!`,
+        `Wait, check out the aura and effects right here! Bro is not playing around today!`,
+        `Look at the battle happening in this corridor, the energy scaling is completely off the charts!`,
+        `Chat, look at that reaction face right there! Absolutely unhinged!`,
+        `Look at how this sequence plays out! You already know things are about to get chaotic!`,
       ];
 
       for (let i = 0; i < activePanels.length; i++) {
@@ -260,7 +377,8 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
           isPunch: !isSimpleRecap && (/^[A-Z0-9!]{3,}|bro|wait|dead|what|he|him|fr/i.test(w) || w.includes('!') || w.includes('?')),
         }));
 
-        let camera = isSimpleRecap ? {
+        const shouldDisableShake = Boolean(isSimpleRecap || disableShake);
+        let camera = shouldDisableShake ? {
           type: 'slow-drift' as any,
           start: { x: 0.5, y: 0.45, zoom: 1.05 },
           end: { x: 0.5, y: 0.55, zoom: 1.15 },
@@ -297,8 +415,10 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
           title: script.commentary ? (script.commentary.slice(0, 24) + '...') : `Panel ${i + 1}`,
           imageUrl: item.dataUrl,
           duration,
+          detectedDialogue: script.detectedDialogue || '',
           commentary: script.commentary,
           camera,
+          disableShake: shouldDisableShake,
           transition: (script as any).transition || (i % 2 === 0 ? 'white-flash' : 'glitch'),
           soundEffect: (script.soundEffect as any) || (i === 0 ? 'record-scratch' : 'vine-boom'),
           soundEffectTime: 1.0,
@@ -498,9 +618,63 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
             </div>
           )}
 
-          {/* Step 3: Recap Style & Options */}
-          <div className="space-y-3 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
-            <span className="font-bold text-zinc-200 block">3. Mamoru Voiceover & Recap Settings</span>
+          {/* Step 3: Recap Style & AI Director Tweaks */}
+          <div className="space-y-4 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-zinc-200 text-xs flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                3. Story Context & AI Director Tweaks (Anti-Generic)
+              </span>
+
+              {/* Auto-Detect Premise from Uploaded Images Button */}
+              <button
+                type="button"
+                onClick={handleAutoDetectPremise}
+                disabled={isDetectingPremise || activeCount === 0}
+                className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-sm shadow-blue-500/20"
+                title="Uses Gemini 3.8 Flash Vision to inspect pictures, read text bubbles, and auto-detect what the manhwa is about"
+              >
+                {isDetectingPremise ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Detecting Story...</span>
+                  </>
+                ) : (
+                  <>
+                    <Search className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Auto-Detect Story from Pictures</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Detected Story Premise Card (if detected) */}
+            {detectedPremiseData && (
+              <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-800/60 text-xs space-y-1.5 animate-fadeIn">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-blue-300 font-bold">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Detected Story: {detectedPremiseData.detectedTitle || 'Manhwa Chapter'}</span>
+                  </div>
+                  {detectedPremiseData.genre && (
+                    <span className="px-1.5 py-0.5 rounded bg-blue-900/50 text-[10px] text-blue-200 font-mono">
+                      {detectedPremiseData.genre}
+                    </span>
+                  )}
+                </div>
+                {detectedPremiseData.premise && (
+                  <p className="text-zinc-300 text-[11px] leading-relaxed">
+                    <strong className="text-zinc-400 font-medium">Premise:</strong> {detectedPremiseData.premise}
+                  </p>
+                )}
+                {detectedPremiseData.characters && detectedPremiseData.characters.length > 0 && (
+                  <div className="text-[11px] text-zinc-400">
+                    <strong className="text-zinc-400 font-medium">Characters:</strong>{' '}
+                    <span className="text-amber-300 font-semibold">{detectedPremiseData.characters.join(', ')}</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div>
               <label className="text-zinc-400 block mb-1">Chapter / Video Title</label>
@@ -513,31 +687,31 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="text-zinc-400 block mb-1">Humor Flavor</label>
+                <label className="text-zinc-400 block mb-1">Humor Flavor / Recap Mode</label>
                 <select
                   value={humorTone}
                   onChange={(e) => setHumorTone(e.target.value)}
                   className="w-full bg-black border border-zinc-700 rounded-lg px-2.5 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-amber-400"
                 >
                   <option value="Simple Recap (Clean Storytelling, No Sound Effects, Smooth Fades)">
-                    ⚡ Simple Recap (No SFX, Clean Fades)
+                    ⚡ Simple Recap (Clean Story, No SFX, Smooth Fades)
                   </option>
                   <option value="Unhinged Mamoru (Comedic, 4th Wall, Meme-heavy, roasts tropes)">
-                    🔥 Unhinged Mamoru (Audience roast)
+                    🔥 Unhinged Mamoru (Audience roast & memes)
                   </option>
                   <option value="Sarcastic Anime Critic (Deadpan logic, questions power scaling)">
-                    💀 Sarcastic Critic (Deadpan)
+                    💀 Sarcastic Critic (Deadpan logic)
                   </option>
                   <option value="Hype Shonen Bro (Screaming hype into comedy cuts)">
-                    ⚡ Hype Shonen (Fast energy)
+                    ⚡ Hype Shonen (Fast energy & hype)
                   </option>
                 </select>
               </div>
 
               <div>
-                <label className="text-zinc-400 block mb-1">AI Voiceover</label>
+                <label className="text-zinc-400 block mb-1">AI Voiceover (Gemini TTS)</label>
                 <label className="flex items-center gap-2 h-8 px-2 bg-black border border-zinc-700 rounded-lg cursor-pointer">
                   <input
                     type="checkbox"
@@ -546,11 +720,77 @@ export const AutoRecapWizardModal: React.FC<AutoRecapWizardModalProps> = ({
                     className="accent-amber-500 rounded"
                   />
                   <span className="text-zinc-300 font-semibold text-xs">
-                    Synthesize with Gemini TTS
+                    Synthesize with Voice Persona ({voicePersona})
+                  </span>
+                </label>
+              </div>
+
+              <div>
+                <label className="text-zinc-400 block mb-1">Camera Shake Motion</label>
+                <label className="flex items-center gap-2 h-8 px-2 bg-black border border-zinc-700 rounded-lg cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={disableShake}
+                    onChange={(e) => setDisableShake(e.target.checked)}
+                    className="accent-amber-500 rounded"
+                  />
+                  <span className="text-zinc-300 font-semibold text-xs">
+                    Disable Screen Shake (Smooth 16:9 Motion)
                   </span>
                 </label>
               </div>
             </div>
+
+            {/* Custom AI Director Tweaks & Story Notes Textarea */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-zinc-400 text-xs font-semibold flex items-center gap-1.5">
+                  <Sliders className="w-3 h-3 text-amber-400" />
+                  <span>Custom AI Director Tweaks & Story Notes</span>
+                </label>
+                <span className="text-[10px] text-zinc-500">Guides AI narrator for exact tone & dialogue</span>
+              </div>
+              <textarea
+                value={userNotes}
+                onChange={(e) => setUserNotes(e.target.value)}
+                rows={2}
+                placeholder="Tell AI specific directions: e.g. 'Read speech bubbles closely, roast the villain's dumb smile, focus on the sword fight, keep narrator pacing rapid'..."
+                className="w-full bg-black border border-zinc-700 rounded-lg p-2.5 text-zinc-200 text-xs focus:outline-none focus:border-amber-400 resize-none font-sans"
+              />
+
+              {/* Quick Tweak Prompt Chips */}
+              <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                <span className="text-[10px] text-zinc-500">Quick Tweaks:</span>
+                {[
+                  { label: '+ Read Text Bubbles', text: 'Follow the dialogue text bubbles precisely and describe character reactions.' },
+                  { label: '+ Comedic Roast', text: 'Roast the tropes, call out the overpowered protagonist, and point out goofy expressions.' },
+                  { label: '+ Serious Lore', text: 'Focus on dramatic tension, rich worldbuilding, and serious narrative storytelling.' },
+                  { label: '+ Action Focus', text: 'Emphasize the combat, martial arts choreography, and ridiculous power scaling.' },
+                  { label: '+ Fast Paced', text: 'Keep voice lines short, snappy, and under 5 seconds for viral retention.' }
+                ].map((chip, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      setUserNotes(prev => prev ? `${prev}\n- ${chip.text}` : chip.text);
+                    }}
+                    className="px-2 py-0.5 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-300 border border-zinc-700 text-[10px] font-medium transition-colors"
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Segmented Processing Badge */}
+            {activeCount > 4 && (
+              <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center gap-2 text-xs text-amber-300">
+                <Zap className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                <span className="text-[11px] leading-tight">
+                  <strong>Segmented Multi-Batch Active:</strong> Processing {activeCount} panels in {Math.ceil(activeCount / 4)} sequential segments (4 images/segment) for ultra-accurate speech bubble reading and cohesive continuity without generic tropes.
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Processing status banner */}

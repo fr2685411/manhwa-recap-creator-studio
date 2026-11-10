@@ -75,58 +75,6 @@ function createComicSvg(options: {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
-// Procedural high-energy comic voice WAV generator to ensure preloaded audio with 0 network calls
-function createSampleVoiceWav(text: string, basePitch = 165): string {
-  const sampleRate = 22050;
-  const words = text.split(/\s+/).filter(Boolean);
-  const dur = Math.max(2.0, Math.min(8.0, words.length * 0.38));
-  const totalSamples = Math.floor(sampleRate * dur);
-  const numSyllables = Math.max(3, Math.round(words.length * 1.55));
-  const sylDuration = dur / numSyllables;
-
-  const buffer = new Uint8Array(44 + totalSamples * 2);
-  const view = new DataView(buffer.buffer);
-
-  // RIFF header
-  buffer.set([0x52, 0x49, 0x46, 0x46], 0); // 'RIFF'
-  view.setUint32(4, 36 + totalSamples * 2, true);
-  buffer.set([0x57, 0x41, 0x56, 0x45], 8); // 'WAVE'
-  buffer.set([0x66, 0x6d, 0x74, 0x20], 12); // 'fmt '
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, 1, true); // Mono
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true); // Byte rate
-  view.setUint16(32, 2, true); // Block align
-  view.setUint16(34, 16, true); // 16-bit
-  buffer.set([0x64, 0x61, 0x74, 0x61], 36); // 'data'
-  view.setUint32(40, totalSamples * 2, true);
-
-  for (let i = 0; i < totalSamples; i++) {
-    const t = i / sampleRate;
-    const sylIndex = Math.floor(t / sylDuration);
-    const sylT = (t % sylDuration) / sylDuration;
-    const sylEnv = Math.sin(Math.PI * Math.min(1, Math.max(0, sylT)));
-
-    const f0 = basePitch + Math.sin(sylIndex * 1.6) * 22 + Math.sin(t * 7.5) * 8;
-    const osc1 = Math.sin(2 * Math.PI * f0 * t);
-    const osc2 = Math.sin(2 * Math.PI * (f0 * 2.05) * t) * 0.42;
-    const osc3 = Math.sin(2 * Math.PI * (f0 * 3.1) * t) * 0.22;
-    const voiceTone = (osc1 + osc2 + osc3) * Math.pow(sylEnv, 1.2);
-
-    const sampleVal = Math.max(-0.95, Math.min(0.95, voiceTone * 0.65));
-    const intVal = Math.floor(sampleVal * 32767);
-    view.setInt16(44 + i * 2, intVal, true);
-  }
-
-  let binary = '';
-  const len = buffer.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(buffer[i]);
-  }
-  return btoa(binary);
-}
-
 // Pre-crafted Sample Chapters
 export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
   'janitor-hunter': {
@@ -134,6 +82,8 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
     title: 'I Transmigrated as an F-Rank Cleaner with an SSS-Grade Dustpan',
     recapMode: 'simple',
     aspectRatio: '16:9',
+    widescreenLayout: 'double-slide',
+    disableShakeEffect: true,
     bgmTrack: 'phonk-combat',
     bgmVolume: 0.35,
     voiceVolume: 1.0,
@@ -179,6 +129,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
           `,
         }),
         duration: 5.5,
+        detectedDialogue: 'System: [CLASS UNLOCKED: JANITOR] - Unique Skill: Trash Compression. MC: "Wait, my awakened class is... a janitor?!"',
         commentary: 'Chat look at this! Bro died from stubbing his pinky toe and got transmigrated as a dungeon janitor!',
         camera: {
           type: 'pan-down',
@@ -191,7 +142,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
         transition: 'white-flash',
         soundEffect: 'record-scratch',
         soundEffectTime: 1.2,
-        audioBase64: createSampleVoiceWav('Chat look at this! Bro died from stubbing his pinky toe and got transmigrated as a dungeon janitor!', 165),
+        audioBase64: undefined,
         subtitles: [
           { text: 'Chat', startTime: 0.0, endTime: 0.7, isPunch: true },
           { text: 'look', startTime: 0.7, endTime: 1.1 },
@@ -234,6 +185,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
           `,
         }),
         duration: 5.2,
+        detectedDialogue: 'MC: "Wait, why does this plastic dustpan have 999,999 holy damage?!" Artifact Box: [SSS-RANK ARTIFACT: DIVINE DUSTPAN]',
         commentary: 'Wait, why does his plastic dustpan have 999,999 holy damage?! The author completely gave up on game balance!',
         camera: {
           type: 'crash-zoom',
@@ -246,7 +198,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
         transition: 'glitch',
         soundEffect: 'vine-boom',
         soundEffectTime: 1.4,
-        audioBase64: createSampleVoiceWav('Wait, why does his plastic dustpan have 999,999 holy damage?! The author completely gave up on game balance!', 175),
+        audioBase64: undefined,
         subtitles: [
           { text: 'Wait,', startTime: 0.0, endTime: 0.8, isPunch: true },
           { text: 'why', startTime: 0.8, endTime: 1.2 },
@@ -284,6 +236,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
           `,
         }),
         duration: 4.8,
+        detectedDialogue: 'Orc Boss: "GURRRRGH! PUNY HUMAN INTRUDER!" MC: "Time to clean up this floor."',
         commentary: 'Enter the boss: a 10-foot tall goblin on 400 grams of pre-workout looking like he wants his lunch money back.',
         camera: {
           type: 'pan-right',
@@ -295,7 +248,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
         transition: 'fade',
         soundEffect: 'anime-punch',
         soundEffectTime: 0.8,
-        audioBase64: createSampleVoiceWav('Enter the boss: a 10-foot tall goblin on 400 grams of pre-workout looking like he wants his lunch money back.', 145),
+        audioBase64: undefined,
         subtitles: [
           { text: 'Enter', startTime: 0.0, endTime: 0.6 },
           { text: 'the', startTime: 0.6, endTime: 0.9 },
@@ -327,6 +280,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
           `,
         }),
         duration: 5.0,
+        detectedDialogue: 'Sound Effect: [SWEEEEP!] MC: "Recycling time." Boss: "IMPOSSIBLE!"',
         commentary: 'My boy did not even use a spell! He just swept this demon into the recycling bin like Monday morning trash!',
         camera: {
           type: 'shake-impact',
@@ -339,7 +293,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
         transition: 'white-flash',
         soundEffect: 'vine-boom',
         soundEffectTime: 1.0,
-        audioBase64: createSampleVoiceWav('My boy did not even use a spell! He just swept this demon into the recycling bin like Monday morning trash!', 170),
+        audioBase64: undefined,
         subtitles: [
           { text: 'My', startTime: 0.0, endTime: 0.4 },
           { text: 'boy', startTime: 0.4, endTime: 0.8, isPunch: true },
@@ -373,6 +327,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
           `,
         }),
         duration: 5.2,
+        detectedDialogue: 'System Window: [MAX LEVEL REACHED] - Title: Custodian of Destiny. EXP: +999,999,999. MC: "I am become Janitor, cleaner of worlds."',
         commentary: 'And of course, fifty level-up notifications pop up at once. Subscribe right now or you will reincarnate as an E-rank potato!',
         camera: {
           type: 'slow-drift',
@@ -384,7 +339,7 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
         transition: 'fade',
         soundEffect: 'level-up',
         soundEffectTime: 1.0,
-        audioBase64: createSampleVoiceWav('And of course, fifty level-up notifications pop up at once. Subscribe right now or you will reincarnate as an E-rank potato!', 160),
+        audioBase64: undefined,
         subtitles: [
           { text: 'Subscribe', startTime: 0.0, endTime: 0.9, isPunch: true },
           { text: 'right', startTime: 0.9, endTime: 1.3 },
@@ -405,6 +360,8 @@ export const SAMPLE_PROJECTS: Record<string, ProjectSettings> = {
     title: 'The Solo Necromancer Who Refused to Leave His Bed',
     recapMode: 'simple',
     aspectRatio: '16:9',
+    widescreenLayout: 'double-slide',
+    disableShakeEffect: true,
     bgmTrack: 'funny-lofi',
     bgmVolume: 0.35,
     voiceVolume: 1.0,

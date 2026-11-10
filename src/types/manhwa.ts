@@ -200,24 +200,31 @@ export interface Panel {
   soundEffectTime: number; // seconds within panel
   audioBase64?: string; // base64 encoded wav audio from Gemini TTS
   audioBlobUrl?: string; // cached object url
+  detectedDialogue?: string; // Text extracted from speech bubbles / narration boxes in the panel image
   voiceSettings?: VoiceClipSettings; // Advanced video editor voiceover settings
   subtitles: SubtitleWord[];
   subtitleStyle?: SubtitleStyle; // Custom subtitle style override for this individual panel
+  companionImageUrl?: string; // Optional 2nd image for 16:9 double-slide layout
+  disableShake?: boolean; // Override to remove screen shake for this panel
 }
 
 export type RecapMode = 'simple' | 'meme-dynamic';
+export type WidescreenLayout = 'single' | 'double-slide' | 'cinematic-fill';
 
 export interface ProjectSettings {
   id: string;
   title: string;
   recapMode?: RecapMode; // 'simple' = No SFX, clean fade transitions, 16:9 default | 'meme-dynamic' = Mamoru meme cuts & SFX
   aspectRatio: '9:16' | '16:9' | '1:1';
+  widescreenLayout?: WidescreenLayout; // 'double-slide' = YouTube Manhwa recap dual-panel spread with blurred ambient background
+  disableShakeEffect?: boolean; // Toggle to disable all screen shaking animations
   bgmTrack: 'phonk-combat' | 'funny-lofi' | 'epic-orchestral' | 'synthwave-hype' | 'chill-reading' | 'none';
   bgmVolume: number; // 0.0 to 1.0
   voiceVolume: number;
   voicePersona: 'Puck' | 'Fenrir' | 'Zephyr' | 'Kore' | 'Charon';
   voiceEngine: 'gemini' | 'browser';
   humorTone: 'unhinged-mamoru' | 'sarcastic-critic' | 'hype-shonen' | 'murim-slap' | 'simple-recap';
+  pacingMultiplier?: number; // 0.5x to 2.0x (default 1.0) - controls playback and video duration pacing
   subtitleStyle: SubtitleStyle;
   panels: Panel[];
 }

@@ -1,5 +1,58 @@
 import { SoundEffectType } from '../types/manhwa';
 
+export interface AudioDiagnostics {
+  duration: number; // raw duration in seconds
+  sampleRate: number;
+  channels: number;
+  peakDb: number; // e.g. -0.8 dB
+  peakLinear: number; // 0.0 to 1.0+
+  rmsDb: number; // e.g. -16.2 dB
+  clippedSamples: number;
+  isClipping: boolean;
+  flatTopCount: number;
+  dcOffset: number;
+  health: 'clean' | 'warning' | 'distorted';
+  healthMessage: string;
+  points: Array<{ min: number; max: number; isClipped: boolean; timeSec: number }>;
+}
+
+// Helper to inspect binary audio and ensure standard 44-byte RIFF WAV header for raw PCM
+function ensureWavBuffer(bytes: Uint8Array, sampleRate = 24000): ArrayBuffer {
+  // If already starts with 'RIFF', return a clean ArrayBuffer
+  if (bytes.length >= 44 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
+    const ab = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(ab).set(bytes);
+    return ab;
+  }
+
+  // Prepend standard 44-byte RIFF header (24kHz, 16-bit, 1 channel mono)
+  const dataLen = bytes.length;
+  const ab = new ArrayBuffer(44 + dataLen);
+  const wav = new Uint8Array(ab);
+  const view = new DataView(ab);
+
+  // 'RIFF'
+  wav[0] = 0x52; wav[1] = 0x49; wav[2] = 0x46; wav[3] = 0x46;
+  view.setUint32(4, 36 + dataLen, true);
+  // 'WAVE'
+  wav[8] = 0x57; wav[9] = 0x41; wav[10] = 0x56; wav[11] = 0x45;
+  // 'fmt '
+  wav[12] = 0x66; wav[13] = 0x6d; wav[14] = 0x74; wav[15] = 0x20;
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  // 'data'
+  wav[36] = 0x64; wav[37] = 0x61; wav[38] = 0x74; wav[39] = 0x61;
+  view.setUint32(40, dataLen, true);
+
+  wav.set(bytes, 44);
+  return ab;
+}
+
 // Synthesizer and Web Audio Player for Background Music, Sound Effects, and Voice Mixing
 class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -222,7 +275,8 @@ class AudioEngine {
       for (let i = 0; i < len; i++) {
         bytes[i] = binaryStr.charCodeAt(i);
       }
-      buffer = await this.ctx.decodeAudioData(bytes.buffer.slice(0));
+      const arrayBuffer = ensureWavBuffer(bytes);
+      buffer = await this.ctx.decodeAudioData(arrayBuffer);
       this.voiceBufferCache.set(base64Wav, buffer);
     }
 
@@ -301,27 +355,18 @@ class AudioEngine {
     if (!this.ctx) return new Array(numBars).fill(0.3);
 
     try {
-      let buffer = this.voiceBufferCache.get(base64Wav);
-      if (!buffer) {
-        const cleanBase64 = base64Wav.includes(',') ? base64Wav.split(',')[1] : base64Wav;
-        const binaryStr = atob(cleanBase64.trim());
-        const len = binaryStr.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binaryStr.charCodeAt(i);
-        }
-        buffer = await this.ctx.decodeAudioData(bytes.buffer.slice(0));
-        this.voiceBufferCache.set(base64Wav, buffer);
-      }
-
+      const buffer = await this.decodeAudioBuffer(base64Wav);
       const channel = buffer.getChannelData(0);
-      const blockSize = Math.floor(channel.length / numBars);
+      const blockSize = Math.max(1, Math.floor(channel.length / numBars));
       const peaks: number[] = [];
 
       for (let i = 0; i < numBars; i++) {
         let sum = 0;
         for (let j = 0; j < blockSize; j++) {
-          sum += Math.abs(channel[i * blockSize + j]);
+          const idx = i * blockSize + j;
+          if (idx < channel.length) {
+            sum += Math.abs(channel[idx]);
+          }
         }
         peaks.push(Math.min(1.0, (sum / blockSize) * 2.8));
       }
@@ -331,6 +376,101 @@ class AudioEngine {
     }
   }
 
+  // Comprehensive Audio Diagnostics for inspecting waveform, distortion, clipping, dynamic range, and exact duration
+  async getAudioDiagnostics(base64Wav: string, numPoints = 140): Promise<AudioDiagnostics> {
+    const buffer = await this.decodeAudioBuffer(base64Wav);
+    const channel = buffer.getChannelData(0);
+    const totalSamples = channel.length;
+    const duration = buffer.duration;
+    const sampleRate = buffer.sampleRate;
+    const channels = buffer.numberOfChannels;
+
+    let peakLinear = 0;
+    let sumSquares = 0;
+    let sumSamples = 0;
+    let clippedSamples = 0;
+    let flatTopCount = 0;
+    let consecutiveMax = 0;
+
+    for (let i = 0; i < totalSamples; i++) {
+      const s = channel[i];
+      const abs = Math.abs(s);
+      if (abs > peakLinear) peakLinear = abs;
+      sumSquares += s * s;
+      sumSamples += s;
+
+      // Digital clipping occurs at or very near 0 dBFS (>= 0.985)
+      if (abs >= 0.985) {
+        clippedSamples++;
+        consecutiveMax++;
+        if (consecutiveMax >= 4) {
+          flatTopCount++;
+        }
+      } else {
+        consecutiveMax = 0;
+      }
+    }
+
+    const dcOffset = sumSamples / Math.max(1, totalSamples);
+    const rms = Math.sqrt(sumSquares / Math.max(1, totalSamples));
+    const peakDb = peakLinear > 0.00001 ? Math.max(-60, 20 * Math.log10(peakLinear)) : -60;
+    const rmsDb = rms > 0.00001 ? Math.max(-60, 20 * Math.log10(rms)) : -60;
+
+    // Detailed bipolar points (min & max for dual-rail envelope)
+    const points: Array<{ min: number; max: number; isClipped: boolean; timeSec: number }> = [];
+    const blockSize = Math.max(1, Math.floor(totalSamples / numPoints));
+
+    for (let i = 0; i < numPoints; i++) {
+      const start = i * blockSize;
+      const end = Math.min(totalSamples, start + blockSize);
+      let min = 0;
+      let max = 0;
+      let pointClipped = false;
+
+      for (let j = start; j < end; j++) {
+        const val = channel[j];
+        if (val < min) min = val;
+        if (val > max) max = val;
+        if (Math.abs(val) >= 0.985) pointClipped = true;
+      }
+      const timeSec = (start / Math.max(1, totalSamples)) * duration;
+      points.push({ min, max, isClipped: pointClipped, timeSec });
+    }
+
+    const isClipping = clippedSamples > 0;
+    const isSevereDistortion = clippedSamples > 50 || flatTopCount > 8;
+
+    let health: 'clean' | 'warning' | 'distorted' = 'clean';
+    let healthMessage = 'Crisp & natural waveform. No digital clipping or flat-topping detected.';
+
+    if (isSevereDistortion) {
+      health = 'distorted';
+      healthMessage = `Distortion warning: ${clippedSamples} samples clipped at 0 dBFS ceiling with flat-topping.`;
+    } else if (isClipping || peakDb > -0.2) {
+      health = 'warning';
+      healthMessage = `Minor peak saturation: Peak at ${peakDb.toFixed(1)} dBFS (${clippedSamples} hot samples).`;
+    } else if (Math.abs(dcOffset) > 0.08) {
+      health = 'warning';
+      healthMessage = `DC offset asymmetry detected (${(dcOffset * 100).toFixed(1)}%).`;
+    }
+
+    return {
+      duration,
+      sampleRate,
+      channels,
+      peakDb,
+      peakLinear,
+      rmsDb,
+      clippedSamples,
+      isClipping,
+      flatTopCount,
+      dcOffset,
+      health,
+      healthMessage,
+      points,
+    };
+  }
+
   // Decode Base64 audio to AudioBuffer for exports or offline processing
   async decodeAudioBuffer(base64Wav: string): Promise<AudioBuffer> {
     this.init();
@@ -338,13 +478,15 @@ class AudioEngine {
     const cached = this.voiceBufferCache.get(base64Wav);
     if (cached) return cached;
 
-    const binaryStr = atob(base64Wav);
+    const cleanBase64 = base64Wav.includes(',') ? base64Wav.split(',')[1] : base64Wav;
+    const binaryStr = atob(cleanBase64.trim());
     const len = binaryStr.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) {
       bytes[i] = binaryStr.charCodeAt(i);
     }
-    const buffer = await this.ctx.decodeAudioData(bytes.buffer.slice(0));
+    const arrayBuffer = ensureWavBuffer(bytes);
+    const buffer = await this.ctx.decodeAudioData(arrayBuffer);
     this.voiceBufferCache.set(base64Wav, buffer);
     return buffer;
   }
@@ -509,6 +651,43 @@ class AudioEngine {
     }
   }
 
+  // Merge all panel voiceover audio clips into one single continuous WAV file
+  async exportMergedVoiceoverWav(panels: Array<{ audioBase64?: string; duration: number }>): Promise<Blob | null> {
+    this.init();
+    if (!this.ctx) return null;
+
+    const clipsToMerge: Array<{ buffer: AudioBuffer; startTime: number }> = [];
+    let accumulatedTime = 0;
+
+    for (const panel of panels) {
+      if (panel.audioBase64) {
+        try {
+          const rawBuf = await this.decodeAudioBuffer(panel.audioBase64);
+          clipsToMerge.push({ buffer: rawBuf, startTime: accumulatedTime });
+        } catch (e) {
+          console.warn('Could not decode audio for panel:', e);
+        }
+      }
+      accumulatedTime += panel.duration;
+    }
+
+    if (clipsToMerge.length === 0) return null;
+
+    const totalDuration = Math.max(1, accumulatedTime);
+    const sampleRate = 24000;
+    const offlineCtx = new OfflineAudioContext(1, Math.ceil(totalDuration * sampleRate), sampleRate);
+
+    clipsToMerge.forEach(({ buffer, startTime }) => {
+      const src = offlineCtx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(offlineCtx.destination);
+      src.start(startTime);
+    });
+
+    const rendered = await offlineCtx.startRendering();
+    return audioBufferToWavBlob(rendered);
+  }
+
   destroy() {
     this.stopBgm();
     this.stopVoice();
@@ -517,6 +696,46 @@ class AudioEngine {
       this.ctx = null;
     }
   }
+}
+
+function audioBufferToWavBlob(buffer: AudioBuffer): Blob {
+  const numChannels = 1;
+  const sampleRate = buffer.sampleRate;
+  const format = 1; // PCM
+  const bitDepth = 16;
+  const samples = buffer.getChannelData(0);
+  const dataLength = samples.length * 2;
+  const bufferArray = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(bufferArray);
+
+  const writeString = (offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, format, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * (bitDepth / 8), true);
+  view.setUint16(32, numChannels * (bitDepth / 8), true);
+  view.setUint16(34, bitDepth, true);
+  writeString(36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    offset += 2;
+  }
+
+  return new Blob([view], { type: 'audio/wav' });
 }
 
 export const audioEngine = new AudioEngine();

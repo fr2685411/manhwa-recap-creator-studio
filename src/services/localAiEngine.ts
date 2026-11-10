@@ -530,27 +530,50 @@ ${params.panelDescriptions.map((desc, i) => `${i + 1}. ${desc}`).join('\n')}`;
       }
     }
 
-    // Default & Fallback: Cloud Gemini
+    // Default & Fallback: Cloud Gemini with full Vision and OCR if images are present
     try {
-      const { requestScriptGeneration } = await import('./geminiClient');
+      const { requestScriptGeneration, requestSegmentedChapterGeneration } = await import('./geminiClient');
+
+      if (params.images && params.images.length > 0) {
+        const visionPayload = params.images.map((img) => ({
+          base64: img,
+          mimeType: img.startsWith('data:image/png') ? 'image/png' : 'image/jpeg',
+        }));
+
+        try {
+          const segmentedResult = await requestSegmentedChapterGeneration({
+            images: visionPayload,
+            chapterTitle: params.chapterTitle,
+            tone: params.tone,
+            userNotes: params.userNotes,
+            segmentSize: 4,
+          });
+          if (segmentedResult && segmentedResult.length > 0) {
+            return segmentedResult;
+          }
+        } catch (segErr) {
+          console.warn('Segmented vision chapter generation failed, trying direct generation:', segErr);
+        }
+      }
+
       return await requestScriptGeneration({
         chapterTitle: params.chapterTitle,
         genre: params.genre,
         tone: params.tone,
         panelDescriptions: params.panelDescriptions,
         userNotes: params.userNotes,
+        images: params.images?.map(img => ({ base64: img, mimeType: 'image/jpeg' })),
       });
     } catch (cloudErr) {
-      console.warn('Cloud Gemini script generation error, using rule-based comedic recap defaults:', cloudErr);
-      // Failsafe comic generator
+      console.warn('Cloud Gemini script generation error, using dynamic panel recap defaults:', cloudErr);
+      // Failsafe dynamic generator
       return params.panelDescriptions.map((desc, i) => ({
+        title: `Scene ${i + 1}`,
         commentary: i === 0 
-          ? `Chat, look at panel ${i + 1}! Bro died from pinky toe trauma and woke up in an SSS dungeon!`
-          : i % 2 === 1
-          ? `Wait, why does this boss look like he's on 500mg of dungeon tren?! Look at bro's posture!`
-          : `Ain't no way bro is actually trying to solo this. The author completely gave up on game balance!`,
+          ? `Check out the situation right here in Scene ${i + 1}: ${desc.slice(0, 70)}!`
+          : `Notice what is happening in panel ${i + 1}: ${desc.slice(0, 70)}!`,
         suggestedCamera: i % 2 === 0 ? 'crash-zoom' : 'pan-down',
-        soundEffect: i === 0 ? 'record-scratch' : (i % 2 === 1 ? 'vine-boom' : 'anime-punch'),
+        soundEffect: i === 0 ? 'record-scratch' : (i % 2 === 1 ? 'vine-boom' : 'none'),
         durationSeconds: 5.2,
       }));
     }

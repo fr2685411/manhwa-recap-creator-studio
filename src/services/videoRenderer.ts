@@ -92,18 +92,40 @@ export class VideoRenderer {
     const isTransitioning = nextPanel && (panel.duration - localTime) <= transitionDuration;
     const transitionProgress = isTransitioning ? (transitionDuration - (panel.duration - localTime)) / transitionDuration : 0;
 
-    // Draw main panel with camera transforms
-    const img = loadedImages.get(panel.imageUrl);
-    if (img && img.complete) {
-      this.drawTransformedPanel(ctx, img, panel, localTime, width, height);
-    } else {
-      this.drawLoadingPanel(ctx, panel, width, height);
-    }
+    // Check if 16:9 Double Slide layout mode is active
+    const isDoubleSlide = project.aspectRatio === '16:9' && (
+      project.widescreenLayout === 'double-slide' || 
+      (!project.widescreenLayout && project.recapMode === 'simple')
+    );
 
-    // Apply transition effects if transitioning
-    if (isTransitioning && nextPanel) {
-      const nextImg = loadedImages.get(nextPanel.imageUrl);
-      this.applyTransition(ctx, width, height, panel.transition, transitionProgress, nextImg, nextPanel);
+    if (isDoubleSlide) {
+      this.drawDoubleSlideLayout(
+        ctx,
+        width,
+        height,
+        project,
+        panelIndex,
+        panel,
+        nextPanel,
+        localTime,
+        loadedImages,
+        isTransitioning,
+        transitionProgress
+      );
+    } else {
+      // Draw main panel with camera transforms
+      const img = loadedImages.get(panel.imageUrl);
+      if (img && img.complete) {
+        this.drawTransformedPanel(ctx, img, panel, localTime, width, height, project.disableShakeEffect);
+      } else {
+        this.drawLoadingPanel(ctx, panel, width, height);
+      }
+
+      // Apply transition effects if transitioning
+      if (isTransitioning && nextPanel) {
+        const nextImg = loadedImages.get(nextPanel.imageUrl);
+        this.applyTransition(ctx, width, height, panel.transition, transitionProgress, nextImg, nextPanel, project.disableShakeEffect);
+      }
     }
 
     // Draw Cinematic Letterbox Vignette
@@ -116,13 +138,202 @@ export class VideoRenderer {
     this.drawWatermarkBadge(ctx, width, height, project);
   }
 
+  // 16:9 Double Slide (Dual Panel Slideshow with Blurred Ambient Background)
+  private drawDoubleSlideLayout(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    project: ProjectSettings,
+    panelIndex: number,
+    panel: Panel,
+    nextPanel: Panel | undefined,
+    localTime: number,
+    loadedImages: Map<string, HTMLImageElement>,
+    isTransitioning: boolean,
+    transitionProgress: number
+  ) {
+    // Primary panel image
+    const img1 = loadedImages.get(panel.imageUrl);
+
+    // Companion image (explicit companionImageUrl, nextPanel.imageUrl, or previousPanel.imageUrl)
+    let companionUrl = panel.companionImageUrl;
+    if (!companionUrl && nextPanel) {
+      companionUrl = nextPanel.imageUrl;
+    } else if (!companionUrl && panelIndex > 0) {
+      companionUrl = project.panels[panelIndex - 1]?.imageUrl;
+    }
+    const img2 = companionUrl ? loadedImages.get(companionUrl) : img1;
+
+    // 1. Draw Blurred Ambient Background covering entire 16:9 canvas
+    ctx.save();
+    if (img1 && img1.complete) {
+      try {
+        ctx.filter = 'blur(28px) brightness(0.48) saturate(1.35)';
+      } catch (e) {
+        // Fallback if filter not supported
+      }
+
+      const bgImg = img1;
+      const imgRatio = bgImg.width / bgImg.height;
+      const canvasRatio = width / height;
+      let bgW = width;
+      let bgH = height;
+      if (canvasRatio > imgRatio) {
+        bgW = width * 1.08;
+        bgH = (width * 1.08) / imgRatio;
+      } else {
+        bgH = height * 1.08;
+        bgW = (height * 1.08) * imgRatio;
+      }
+      ctx.drawImage(bgImg, (width - bgW) / 2, (height - bgH) / 2, bgW, bgH);
+      ctx.filter = 'none';
+    } else {
+      ctx.fillStyle = '#0a0d18';
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.restore();
+
+    // Dark gradient overlay for contrast & cinematic mood
+    ctx.save();
+    const darkGrad = ctx.createLinearGradient(0, 0, 0, height);
+    darkGrad.addColorStop(0, 'rgba(10, 12, 20, 0.45)');
+    darkGrad.addColorStop(0.5, 'rgba(10, 12, 20, 0.25)');
+    darkGrad.addColorStop(1, 'rgba(8, 10, 16, 0.75)');
+    ctx.fillStyle = darkGrad;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+
+    // Gentle camera drift without any shaking
+    const timeProgress = Math.min(1, Math.max(0, localTime / panel.duration));
+    const subtleDrift = 1.0 + timeProgress * 0.025; // 1.0 -> 1.025 gentle drift
+
+    // Transition slide offsets
+    let slideOffsetX = 0;
+    let slideAlpha = 1.0;
+    if (isTransitioning) {
+      slideOffsetX = -transitionProgress * width * 0.08;
+      slideAlpha = 1.0 - transitionProgress * 0.35;
+    }
+
+    // Double Slide Card Dimensions (Left & Right side by side)
+    const cardGap = width * 0.035; // 3.5% gap
+    const cardMarginX = width * 0.045; // 4.5% margin from edges
+    const availableW = width - (cardMarginX * 2) - cardGap;
+    const cardW = availableW / 2;
+    const cardH = height * 0.82; // 82% height
+    const cardY = (height - cardH) / 2;
+
+    const leftCardX = cardMarginX + slideOffsetX;
+    const rightCardX = cardMarginX + cardW + cardGap + slideOffsetX;
+
+    // Helper to draw a rounded card
+    const drawCard = (
+      img: HTMLImageElement | undefined,
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      isActive: boolean
+    ) => {
+      if (!img || !img.complete) return;
+
+      ctx.save();
+      ctx.globalAlpha = slideAlpha;
+
+      // Card drop shadow
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+      ctx.shadowBlur = 32;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 12;
+
+      // Card background fill
+      ctx.fillStyle = '#0a0a14';
+      ctx.beginPath();
+      this.drawRoundedRectPath(ctx, x, y, w, h, 16);
+      ctx.fill();
+
+      // Reset shadow for clipping
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+
+      // Clip image to card boundary
+      ctx.save();
+      ctx.beginPath();
+      this.drawRoundedRectPath(ctx, x, y, w, h, 16);
+      ctx.clip();
+
+      const imgRatio = img.width / img.height;
+      const cardRatio = w / h;
+      let drawW = w;
+      let drawH = h;
+      let drawX = x;
+      let drawY = y;
+
+      if (imgRatio > cardRatio) {
+        // Wider image: fit width, center vertically
+        drawW = w * (isActive ? subtleDrift : 1.0);
+        drawH = drawW / imgRatio;
+        drawX = x + (w - drawW) / 2;
+        drawY = y + (h - drawH) / 2;
+      } else {
+        // Taller image (vertical strip): fit height, center horizontally
+        drawH = h * (isActive ? subtleDrift : 1.0);
+        drawW = drawH * imgRatio;
+        drawX = x + (w - drawW) / 2;
+        drawY = y + (h - drawH) / 2;
+      }
+
+      ctx.drawImage(img, drawX, drawY, drawW, drawH);
+      ctx.restore();
+
+      // Border & Active Accent Ring
+      ctx.save();
+      ctx.lineWidth = isActive ? 2.5 : 1.5;
+      ctx.strokeStyle = isActive ? 'rgba(56, 189, 248, 0.65)' : 'rgba(255, 255, 255, 0.2)';
+      ctx.beginPath();
+      this.drawRoundedRectPath(ctx, x, y, w, h, 16);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.restore();
+    };
+
+    // Draw Left Card (Primary panel)
+    if (img1 && img1.complete) {
+      drawCard(img1, leftCardX, cardY, cardW, cardH, true);
+    }
+
+    // Draw Right Card (Companion or next panel)
+    if (img2 && img2.complete) {
+      drawCard(img2, rightCardX, cardY, cardW, cardH, false);
+    }
+  }
+
+  private drawRoundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+    if (typeof (ctx as any).roundRect === 'function') {
+      (ctx as any).roundRect(x, y, w, h, r);
+    } else {
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+    }
+  }
+
   private drawTransformedPanel(
     ctx: CanvasRenderingContext2D,
     img: HTMLImageElement,
     panel: Panel,
     localTime: number,
     targetW: number,
-    targetH: number
+    targetH: number,
+    disableGlobalShake: boolean = false
   ) {
     const progress = Math.min(1, Math.max(0, localTime / panel.duration));
     const cam = interpolateTransform(panel.camera.start, panel.camera.end, progress, panel.camera.easing);
@@ -132,14 +343,18 @@ export class VideoRenderer {
     let shakeY = 0;
     let shakeRot = 0;
 
-    const shakeCenter = panel.camera.shakeTime ?? (panel.soundEffectTime || 0.5);
-    const shakeDist = Math.abs(localTime - shakeCenter);
-    if (shakeDist < 0.35 && panel.camera.shakeIntensity > 0) {
-      const decay = 1 - (shakeDist / 0.35);
-      const intensity = panel.camera.shakeIntensity * 28 * decay;
-      shakeX = (Math.sin(localTime * 120) + Math.cos(localTime * 85)) * intensity;
-      shakeY = (Math.cos(localTime * 110) - Math.sin(localTime * 70)) * intensity;
-      shakeRot = (Math.sin(localTime * 90) * 0.04) * decay;
+    const isShakeDisabled = disableGlobalShake || panel.disableShake || panel.camera.shakeIntensity <= 0;
+
+    if (!isShakeDisabled) {
+      const shakeCenter = panel.camera.shakeTime ?? (panel.soundEffectTime || 0.5);
+      const shakeDist = Math.abs(localTime - shakeCenter);
+      if (shakeDist < 0.35 && panel.camera.shakeIntensity > 0) {
+        const decay = 1 - (shakeDist / 0.35);
+        const intensity = panel.camera.shakeIntensity * 28 * decay;
+        shakeX = (Math.sin(localTime * 120) + Math.cos(localTime * 85)) * intensity;
+        shakeY = (Math.cos(localTime * 110) - Math.sin(localTime * 70)) * intensity;
+        shakeRot = (Math.sin(localTime * 90) * 0.04) * decay;
+      }
     }
 
     ctx.save();
@@ -189,7 +404,8 @@ export class VideoRenderer {
     transition: string,
     progress: number,
     nextImg?: HTMLImageElement,
-    nextPanel?: Panel
+    nextPanel?: Panel,
+    disableGlobalShake: boolean = false
   ) {
     if (!nextImg || !nextImg.complete || !nextPanel) {
       // Fallback simple flash if next image not loaded yet
@@ -210,7 +426,7 @@ export class VideoRenderer {
       ctx.beginPath();
       ctx.rect(curlX, 0, width - curlX, height);
       ctx.clip();
-      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
       ctx.restore();
 
       // Shadow cast by turning page
@@ -247,7 +463,7 @@ export class VideoRenderer {
       ctx.save();
       // Reveal next panel proportionally
       ctx.globalAlpha = Math.min(1, progress * 1.4);
-      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
       ctx.restore();
 
       // Dynamic radial and horizontal speed lines overlay
@@ -306,7 +522,7 @@ export class VideoRenderer {
       ctx.clip();
 
       // Next panel revealed inside ink
-      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
       ctx.restore();
 
       // Ink border splatter droplets
@@ -333,7 +549,7 @@ export class VideoRenderer {
 
       // Draw next panel behind
       ctx.save();
-      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
       ctx.restore();
 
       // Half 1: Upper Triangle (slides up-left)
@@ -391,7 +607,7 @@ export class VideoRenderer {
       if (progress > 0.4) {
         ctx.save();
         ctx.globalAlpha = (progress - 0.4) / 0.6;
-        this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+        this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
         ctx.restore();
       }
 
@@ -422,7 +638,7 @@ export class VideoRenderer {
       if (progress > 0.5) {
         ctx.save();
         ctx.globalAlpha = (progress - 0.5) * 2;
-        this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+        this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
         ctx.restore();
       }
 
@@ -453,7 +669,7 @@ export class VideoRenderer {
         ctx.translate(width / 2, height / 2);
         ctx.scale(scale, scale);
         ctx.translate(-width / 2, -height / 2);
-        this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+        this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
         ctx.restore();
       }
       ctx.restore();
@@ -467,7 +683,7 @@ export class VideoRenderer {
       ctx.rect(slideX, 0, width - slideX, height);
       ctx.clip();
       ctx.translate(slideX, 0);
-      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
       ctx.restore();
 
       // Motion streak border
@@ -479,14 +695,14 @@ export class VideoRenderer {
     else if (transition === 'fade') {
       ctx.save();
       ctx.globalAlpha = progress;
-      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+      this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
       ctx.restore();
     }
 
     // 10. Cut (Direct swap)
     else if (transition === 'cut') {
       if (progress >= 0.5) {
-        this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height);
+        this.drawTransformedPanel(ctx, nextImg, nextPanel, 0, width, height, disableGlobalShake);
       }
     }
   }
@@ -698,27 +914,26 @@ export class VideoRenderer {
   // Preload all panel images into memory
   async preloadImages(panels: Panel[]): Promise<Map<string, HTMLImageElement>> {
     const map = new Map<string, HTMLImageElement>();
-    const promises = panels.map((panel) => {
+    const urls: string[] = [];
+    panels.forEach((p) => {
+      if (p.imageUrl) urls.push(p.imageUrl);
+      if (p.companionImageUrl) urls.push(p.companionImageUrl);
+    });
+
+    const uniqueUrls = Array.from(new Set(urls));
+    const promises = uniqueUrls.map((url) => {
       return new Promise<void>((resolve) => {
-        if (!panel.imageUrl) {
-          resolve();
-          return;
-        }
-        if (map.has(panel.imageUrl)) {
-          resolve();
-          return;
-        }
         const img = new Image();
         img.crossOrigin = 'anonymous';
         img.onload = () => {
-          map.set(panel.imageUrl, img);
+          map.set(url, img);
           resolve();
         };
         img.onerror = () => {
-          console.warn('Failed to load image for panel:', panel.id);
+          console.warn('Failed to load image:', url);
           resolve();
         };
-        img.src = panel.imageUrl;
+        img.src = url;
       });
     });
 
@@ -734,11 +949,14 @@ export class VideoRenderer {
       bitrate?: number; // e.g. 14_000_000 for 14 Mbps
       resolution?: '1080x1920' | '1920x1080' | '1080x1080';
       aspectRatio?: '9:16' | '16:9' | '1:1';
+      pacingMultiplier?: number; // e.g. 0.8x for slow/detailed, 1.25x for fast-paced
       onProgress: (progress: number, currentSec: number, totalSec: number) => void;
       onStatus: (status: string) => void;
     }
   ): Promise<Blob> {
-    const { fps = 30, bitrate = 14_000_000, resolution, aspectRatio, onProgress, onStatus } = options;
+    const { fps = 30, bitrate = 14_000_000, resolution, aspectRatio, pacingMultiplier, onProgress, onStatus } = options;
+
+    const speed = Math.max(0.5, Math.min(2.5, pacingMultiplier ?? project.pacingMultiplier ?? 1.0));
 
     onStatus('Preloading high-resolution panels...');
     const loadedImages = await this.preloadImages(project.panels);
@@ -790,16 +1008,44 @@ export class VideoRenderer {
       effectiveAspectRatio = project.aspectRatio || (width === 1920 ? '16:9' : '9:16');
     }
 
+    const effectiveProject: ProjectSettings = {
+      ...project,
+      aspectRatio: effectiveAspectRatio,
+      pacingMultiplier: speed,
+      panels: project.panels.map((p) => {
+        const scaledDur = Math.max(1.0, Math.round((p.duration / speed) * 10) / 10);
+        const originalSpeed = p.voiceSettings?.speed || 1.0;
+        const newVoiceSpeed = Math.max(0.6, Math.min(1.8, Math.round(originalSpeed * speed * 10) / 10));
+        return {
+          ...p,
+          duration: scaledDur,
+          soundEffectTime: Math.min(scaledDur * 0.9, (p.soundEffectTime || 0.5) / speed),
+          voiceSettings: {
+            volume: 1.0,
+            speed: newVoiceSpeed,
+            pitch: 0,
+            startOffset: 0,
+            fadeIn: 0.05,
+            fadeOut: 0.05,
+            isMuted: false,
+            voicePersona: project.voicePersona || 'Puck',
+            eqFilter: 'clean',
+            ...p.voiceSettings,
+          },
+        };
+      }),
+    };
+
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = width;
     exportCanvas.height = height;
     const ctx = exportCanvas.getContext('2d', { alpha: false });
     if (!ctx) throw new Error('Could not get 2D context for export canvas');
 
-    const totalDuration = this.getTotalDuration(project);
+    const totalDuration = this.getTotalDuration(effectiveProject);
     if (totalDuration <= 0) throw new Error('Video duration must be greater than 0');
 
-    onStatus('Initializing 1080p high-bitrate recorder...');
+    onStatus(`Initializing 1080p recorder (${speed.toFixed(2)}x pacing, ~${totalDuration.toFixed(1)}s duration)...`);
 
     // Video stream from canvas
     const videoStream = exportCanvas.captureStream(fps);
@@ -839,12 +1085,12 @@ export class VideoRenderer {
     recorder.start(100);
 
     // Start background music and audio engine for export
-    if (project.bgmTrack !== 'none') {
-      audioEngine.startBgm(project.bgmTrack);
+    if (effectiveProject.bgmTrack !== 'none') {
+      audioEngine.startBgm(effectiveProject.bgmTrack);
     }
-    audioEngine.setVolumes(project.bgmVolume, project.voiceVolume);
+    audioEngine.setVolumes(effectiveProject.bgmVolume, effectiveProject.voiceVolume);
 
-    onStatus('Rendering high-bitrate video frames & audio...');
+    onStatus(`Rendering video frames at ${speed.toFixed(2)}x pacing & mixed audio...`);
 
     // Playback and record timeline
     const startTime = performance.now();
@@ -879,7 +1125,7 @@ export class VideoRenderer {
           }
 
           // Check panel switch to trigger SFX / Voice
-          const { panelIndex, panel, localTime } = this.getPanelAtTime(project, virtualTime);
+          const { panelIndex, panel, localTime } = this.getPanelAtTime(effectiveProject, virtualTime);
           if (panelIndex !== currentPanelIndex) {
             currentPanelIndex = panelIndex;
             // Play sound effect if at start
@@ -900,10 +1146,7 @@ export class VideoRenderer {
             width,
             height,
             time: virtualTime,
-            project: {
-              ...project,
-              aspectRatio: effectiveAspectRatio,
-            },
+            project: effectiveProject,
             loadedImages,
           });
 

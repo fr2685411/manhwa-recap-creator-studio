@@ -93,7 +93,12 @@ export const PlayerPreview: React.FC<PlayerPreviewProps> = ({
     // Voiceover: apply per-clip speed, pitch, gain, and EQ filter
     if (panel.audioBase64) {
       audioEngine.duckBgm(true);
-      audioEngine.playVoiceBase64(panel.audioBase64, panel.voiceSettings).catch(err => {
+      const pacing = project.pacingMultiplier || 1.0;
+      const effectiveVoiceSettings = {
+        ...panel.voiceSettings,
+        speed: Math.max(0.6, Math.min(1.8, (panel.voiceSettings?.speed || 1.0) * pacing)),
+      };
+      audioEngine.playVoiceBase64(panel.audioBase64, effectiveVoiceSettings as any).catch(err => {
         console.warn('Audio playback error, falling back to Web Speech:', err);
         speakBrowserVoice(panel.commentary, () => audioEngine.duckBgm(false));
       });
@@ -189,7 +194,8 @@ export const PlayerPreview: React.FC<PlayerPreviewProps> = ({
       const deltaSec = Math.min(0.1, (now - lastTimeRef.current) / 1000);
       lastTimeRef.current = now;
 
-      let nextTime = currentTimeRef.current + deltaSec;
+      const pacing = project.pacingMultiplier || 1.0;
+      let nextTime = currentTimeRef.current + deltaSec * pacing;
       
       if (nextTime >= totalDuration) {
         if (isLooping) {
@@ -479,6 +485,32 @@ export const PlayerPreview: React.FC<PlayerPreviewProps> = ({
               title="Voice Volume"
             />
           </div>
+
+          {/* Pacing Speed Multiplier Selector */}
+          {onUpdateProject && (
+            <div className="flex items-center bg-zinc-900 border border-zinc-700/80 rounded-lg p-0.5" title="Playback & Pacing Speed">
+              {[0.8, 1.0, 1.25, 1.5].map((spd) => {
+                const currentSpd = project.pacingMultiplier || 1.0;
+                const isSelected = Math.abs(currentSpd - spd) < 0.05;
+                return (
+                  <button
+                    key={spd}
+                    onClick={() => {
+                      onUpdateProject((prev) => ({ ...prev, pacingMultiplier: spd }));
+                    }}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold transition-all ${
+                      isSelected
+                        ? 'bg-amber-400 text-black shadow-sm'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                    title={`Set Pacing Speed to ${spd}x`}
+                  >
+                    {spd}x
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Master Mute Button */}
           <button

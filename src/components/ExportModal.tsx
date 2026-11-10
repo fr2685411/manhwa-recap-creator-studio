@@ -15,11 +15,15 @@ import {
   Square,
   Mic,
   Volume2,
-  FileText
+  FileText,
+  Gauge,
+  Columns,
+  Activity
 } from 'lucide-react';
 import { ProjectSettings, Panel } from '../types/manhwa';
 import { videoRenderer } from '../services/videoRenderer';
 import { requestTtsAudio } from '../services/geminiClient';
+import { audioEngine } from '../services/audioEngine';
 
 interface ExportModalProps {
   project: ProjectSettings;
@@ -39,12 +43,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   );
   const [bitrate, setBitrate] = useState<number>(14_000_000); // 14 Mbps
   const [fps, setFps] = useState<number>(30);
+  const [pacingSpeed, setPacingSpeed] = useState<number>(project.pacingMultiplier || 1.0);
   
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState('');
   const [renderedBlob, setRenderedBlob] = useState<Blob | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [isMergingAudio, setIsMergingAudio] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
@@ -96,6 +102,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         bitrate,
         resolution,
         aspectRatio: targetAspectRatio,
+        pacingMultiplier: pacingSpeed,
         onProgress: (p, cur, tot) => {
           setProgress(p);
         },
@@ -128,20 +135,79 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     document.body.removeChild(a);
   };
 
+  // Export all voiceover script lines into a single clean text file (.txt)
   const handleExportTtsScript = () => {
-    const lines = project.panels
-      .map(p => p.commentary.trim())
-      .filter(Boolean)
-      .join('\n');
-    const blob = new Blob([lines], { type: 'text/plain;charset=utf-8' });
+    let content = `========================================================\n`;
+    content += `MANHWA RECAP STORY SCRIPT: ${project.title || 'Chapter Recap'}\n`;
+    content += `Recap Mode: ${project.recapMode || 'standard'} | Total Panels: ${project.panels.length}\n`;
+    const totalDurationSec = project.panels.reduce((sum, p) => sum + p.duration, 0) / (project.pacingMultiplier || 1.0);
+    content += `Estimated Video Duration: ~${totalDurationSec.toFixed(1)}s (at ${(project.pacingMultiplier || 1.0).toFixed(2)}x speed)\n`;
+    content += `========================================================\n\n`;
+
+    content += `--- TIMED SCENE-BY-SCENE BREAKDOWN ---\n\n`;
+    let accumulated = 0;
+    project.panels.forEach((p, idx) => {
+      const dur = p.duration / (project.pacingMultiplier || 1.0);
+      const startMin = Math.floor(accumulated / 60);
+      const startSec = Math.floor(accumulated % 60).toString().padStart(2, '0');
+      accumulated += dur;
+      const endMin = Math.floor(accumulated / 60);
+      const endSec = Math.floor(accumulated % 60).toString().padStart(2, '0');
+
+      content += `[PANEL ${idx + 1}] (${startMin}:${startSec} - ${endMin}:${endSec} | ${dur.toFixed(1)}s) - "${p.title}"\n`;
+      if (p.detectedDialogue) {
+        content += `DIALOGUE IN IMAGE: ${p.detectedDialogue}\n`;
+      }
+      content += `VOICEOVER NARRATION:\n"${p.commentary || ''}"\n\n`;
+    });
+
+    content += `\n========================================================\n`;
+    content += `CLEAN TTS LINES ONLY (FOR ELEVENLABS / EDGE-TTS / KOKORO):\n`;
+    content += `========================================================\n`;
+    project.panels.forEach((p) => {
+      if (p.commentary && p.commentary.trim()) {
+        content += `${p.commentary.trim()}\n`;
+      }
+    });
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${(project.title || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}_tts_lines.txt`;
+    a.download = `${(project.title || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}_all_voice_lines.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  // Export merged audio (.wav) combining all synthesized panel voiceovers into one file
+  const handleExportMergedAudio = async () => {
+    const panelsWithVoice = project.panels.filter(p => p.audioBase64);
+    if (panelsWithVoice.length === 0) {
+      alert('No synthesized voice clips found. You can synthesize voices in the Voice tab or during video export.');
+      return;
+    }
+
+    setIsMergingAudio(true);
+    try {
+      const blob = await audioEngine.exportMergedVoiceoverWav(project.panels);
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${(project.title || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}_merged_voiceover.wav`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (err: any) {
+      console.warn('Audio export failed:', err);
+      alert('Could not merge audio: ' + err.message);
+    } finally {
+      setIsMergingAudio(false);
+    }
   };
 
   const totalDuration = videoRenderer.getTotalDuration(project);
@@ -273,6 +339,124 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     </button>
                   )}
                 </div>
+
+                {/* 16:9 Slideshow Layout: Double Slide vs Single Focus */}
+                {resolution === '1920x1080' && onUpdateProject && (
+                  <div className="mt-3 p-3 rounded-xl bg-blue-950/25 border border-blue-900/40 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-white text-xs flex items-center gap-1.5">
+                        <Columns className="w-3.5 h-3.5 text-blue-400" />
+                        16:9 Slideshow Layout
+                      </span>
+                      <span className="text-[10px] text-blue-300 font-mono font-bold">
+                        {project.widescreenLayout === 'double-slide' || (!project.widescreenLayout && project.recapMode === 'simple')
+                          ? 'Double Slide (Active)'
+                          : 'Single Focus'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onUpdateProject(p => ({ ...p, widescreenLayout: 'double-slide' }))}
+                        className={`p-2.5 rounded-lg border text-left text-xs transition-all ${
+                          project.widescreenLayout === 'double-slide' || (!project.widescreenLayout && project.recapMode === 'simple')
+                            ? 'border-blue-400 bg-blue-500/20 text-white shadow-sm ring-1 ring-blue-400/40'
+                            : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        <div className="font-bold flex items-center gap-1.5">
+                          <span>🎞️ Double Slide</span>
+                          <span className="text-[9px] bg-blue-500/30 text-blue-200 px-1 py-0.2 rounded font-mono">Popular</span>
+                        </div>
+                        <div className="text-[10px] text-zinc-400 mt-0.5">2 side-by-side cards with blurred ambient backdrop</div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => onUpdateProject(p => ({ ...p, widescreenLayout: 'single' }))}
+                        className={`p-2.5 rounded-lg border text-left text-xs transition-all ${
+                          project.widescreenLayout === 'single'
+                            ? 'border-amber-400 bg-amber-500/20 text-white shadow-sm ring-1 ring-amber-400/40'
+                            : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        <div className="font-bold">🔲 Single Focus</div>
+                        <div className="text-[10px] text-zinc-400 mt-0.5">1 centered panel in widescreen frame</div>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Video Pacing & Duration Speed Control (Slow-Paced & Detailed vs. Fast-Paced) */}
+              <div className="p-4 bg-zinc-900/90 rounded-2xl border border-zinc-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Gauge className="w-4 h-4 text-amber-400" />
+                    <div>
+                      <span className="font-bold text-zinc-200">Video Pacing & Duration Speed</span>
+                      <p className="text-[10px] text-zinc-400">Control export duration and speech pacing</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-zinc-500 line-through">
+                      Raw: {totalDuration.toFixed(1)}s
+                    </span>
+                    <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 text-xs font-black border border-amber-500/40 font-mono shadow-sm">
+                      Export: {(totalDuration / pacingSpeed).toFixed(1)}s ({pacingSpeed.toFixed(2)}x)
+                    </span>
+                  </div>
+                </div>
+
+                {/* Preset Speed Buttons */}
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    { speed: 0.8, icon: '🐢', name: 'Slow & Detailed', desc: 'Extended pauses & deep story' },
+                    { speed: 1.0, icon: '⚖️', name: 'Standard (1.0x)', desc: 'Natural timeline duration' },
+                    { speed: 1.25, icon: '⚡', name: 'Fast-Paced', desc: 'Snappy high-retention recap' },
+                    { speed: 1.5, icon: '🚀', name: 'Viral Rush', desc: 'Rapid-fire shorts pace' },
+                  ].map((preset) => (
+                    <button
+                      key={preset.speed}
+                      type="button"
+                      onClick={() => setPacingSpeed(preset.speed)}
+                      className={`p-2.5 rounded-xl border text-left transition-all ${
+                        Math.abs(pacingSpeed - preset.speed) < 0.02
+                          ? 'border-amber-400 bg-amber-500/20 text-white ring-1 ring-amber-400/50 shadow-md'
+                          : 'border-zinc-800 bg-zinc-950/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-white mb-0.5">
+                        <span>{preset.icon}</span>
+                        <span className="truncate">{preset.name}</span>
+                      </div>
+                      <div className="text-[10px] text-zinc-400 leading-tight">
+                        {preset.desc}
+                      </div>
+                      <div className="mt-1.5 text-[10px] font-mono text-amber-400 font-bold">
+                        ~{(totalDuration / preset.speed).toFixed(1)}s
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Fine-tuning slider */}
+                <div className="pt-1 flex items-center gap-3 bg-black/40 p-2 rounded-xl border border-zinc-800/80">
+                  <span className="text-[11px] text-zinc-400 font-semibold shrink-0">Custom Multiplier:</span>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="2.0"
+                    step="0.05"
+                    value={pacingSpeed}
+                    onChange={(e) => setPacingSpeed(parseFloat(e.target.value))}
+                    className="flex-1 accent-amber-400 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+                  />
+                  <span className="text-xs font-mono font-bold text-amber-300 w-14 text-right">
+                    {pacingSpeed.toFixed(2)}x
+                  </span>
+                </div>
               </div>
 
               {/* Bitrate selection */}
@@ -359,24 +543,47 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 </div>
               </div>
 
-              {/* TTS Voiceover Export Box */}
-              <div className="p-3 bg-blue-950/20 border border-blue-900/40 rounded-xl flex items-center justify-between text-xs">
-                <div>
-                  <div className="font-bold text-white flex items-center gap-1.5">
+              {/* Voiceover Script & Audio Export Box (All in One File) */}
+              <div className="p-3 bg-gradient-to-r from-blue-950/30 via-indigo-950/20 to-purple-950/20 border border-blue-900/50 rounded-xl space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 font-bold text-white">
                     <FileText className="w-3.5 h-3.5 text-blue-400" />
-                    <span>AI Voiceover Script for External TTS</span>
+                    <span>Consolidated Voice Lines & Audio (All-in-One)</span>
                   </div>
-                  <div className="text-[10px] text-zinc-400 mt-0.5">
-                    Download clean line-by-line .txt file to generate speech using ElevenLabs, Edge-TTS, or Kokoro
-                  </div>
+                  <span className="text-[10px] text-zinc-400 font-mono">
+                    {project.panels.length} panels
+                  </span>
                 </div>
-                <button
-                  onClick={handleExportTtsScript}
-                  className="px-3 py-1.5 rounded-lg bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 font-bold border border-blue-500/40 flex items-center gap-1.5 transition-all shrink-0 ml-2 text-[11px]"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Export TTS .TXT</span>
-                </button>
+                <p className="text-[11px] text-zinc-400">
+                  Export all panel narrator lines into a single text file (with timestamps and clean TTS lines), or download the combined voiceover audio as one WAV file.
+                </p>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleExportTtsScript}
+                    className="flex-1 py-1.5 px-3 rounded-lg bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 font-bold border border-blue-500/40 flex items-center justify-center gap-1.5 transition-all text-[11px]"
+                    title="Download all voiceover lines consolidated into one .txt file for ElevenLabs, Edge-TTS, or Kokoro"
+                  >
+                    <Download className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Export All Voice Lines (.txt)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleExportMergedAudio}
+                    disabled={isMergingAudio || project.panels.filter(p => p.audioBase64).length === 0}
+                    className="py-1.5 px-3 rounded-lg bg-purple-600/30 hover:bg-purple-600/50 disabled:opacity-40 text-purple-300 font-bold border border-purple-500/40 flex items-center justify-center gap-1.5 transition-all text-[11px]"
+                    title="Download all synthesized voice clips merged into a single WAV audio file"
+                  >
+                    {isMergingAudio ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Volume2 className="w-3.5 h-3.5 text-purple-400" />
+                    )}
+                    <span>{isMergingAudio ? 'Merging...' : 'Export Merged Audio (.wav)'}</span>
+                  </button>
+                </div>
               </div>
 
               {error && (

@@ -31,65 +31,133 @@ const getAiClient = () => {
   });
 };
 
-// API: Generate Mamoru-style 4th-wall breaking recap script
+// API: Generate Mamoru-style or Simple Recap script with multimodal image & speech bubble vision
 app.post('/api/gemini/generate-script', async (req: Request, res: Response) => {
   try {
     const { 
-      chapterTitle, 
+      chapterTitle = 'Manhwa Chapter', 
       genre = 'Action Fantasy Manhwa', 
       tone = 'Unhinged Mamoru (Comedic, 4th Wall, Meme-heavy)',
       panelDescriptions = [],
-      userNotes = ''
+      userNotes = '',
+      images = [], // Optional Array of { base64: string, mimeType?: string }
     } = req.body;
 
     const ai = getAiClient();
+
+    // Sanitize chapter title to remove sample placeholders when analyzing custom panels
+    const isSampleTitle = /cleaner|dustpan|janitor|necromancer|bed/i.test(chapterTitle);
+    const sanitizedTitle = isSampleTitle && images.length > 0 ? 'Uploaded Manhwa Chapter' : chapterTitle;
 
     const isSimpleRecap = tone.toLowerCase().includes('simple');
 
     const systemPrompt = isSimpleRecap ? `You are a professional YouTube Manhwa Recap narrator in Simple Recap style.
 Your goal:
-- Deliver clear, immersive, engaging storytelling that summarizes the manhwa chapter.
+- Deliver clear, immersive, engaging storytelling that summarizes the manhwa chapter based on the visual art and dialogue.
+- NEVER mention "F-rank cleaner", "dustpan", "bed necromancer", or generic sample tropes unless literally drawn in the image.
+- Read every speech bubble, thought balloon, and system screen (OCR).
 - No distracting fourth-wall screams or sound effects: always set "soundEffect": "none".
 - Camera motions must be calm and smooth: use "suggestedCamera": "slow-drift" or "pan-down".
 - Each panel should have:
-  1. commentary: 1-3 clear, engaging spoken lines suitable for text-to-speech (TTS) audio narration.
-  2. suggestedCamera: 'slow-drift' or 'pan-down'.
-  3. soundEffect: 'none'.
-  4. subtitles: word-by-word or short phrases for clean captions.
-  5. durationSeconds: estimated speaking duration (usually 4 to 8 seconds).` : `You are an elite YouTube Manhwa Recap creator in the iconic comedic style of @MamoruManhwa.
+  1. title: punchy scene title.
+  2. detectedDialogue: transcription of text bubbles/signs read from the image.
+  3. commentary: 1-3 clear, engaging spoken lines suitable for text-to-speech (TTS) audio narration.
+  4. suggestedCamera: 'slow-drift' or 'pan-down'.
+  5. soundEffect: 'none'.
+  6. subtitles: word-by-word or short phrases for clean captions.
+  7. durationSeconds: estimated speaking duration (usually 4 to 8 seconds).` : `You are an elite YouTube Manhwa Recap creator in the iconic comedic style of @MamoruManhwa.
 Your personality and tone:
 - You speak as a viewer watching along with the audience ("Chat, look at this guy", "Bro really thought he had plot armor", "Wait, why does the villain look like a K-pop idol with anger issues?").
 - You constantly BREAK THE FOURTH WALL: talk directly to the audience, roast the author/artist's tropes ("The artist clearly copy-pasted this horse", "Truck-kun took a vacation so they used a tractor"), question ridiculous power scaling, and call out clichés.
 - High energy, snappy pacing, humorous commentary, playful hyperbole.
+- NEVER assume or mention "F-rank cleaner", "dustpan", "bed necromancer", or copy unrelated sample stories! Study the SPECIFIC characters, monsters (e.g. Nether Ghouls), glowing auras, weapons, and dialogue in each picture!
 - Don't just narrate what happens ("He drew his sword") — add commentary ("Look at him pulling out a sword bigger than his rent bill").
 - Each panel should have:
-  1. commentary: 1-3 punchy, hilarious spoken lines (approx 4 to 10 seconds of speaking time).
-  2. suggestedCamera: one of ['pan-down', 'crash-zoom', 'pan-right', 'zoom-in', 'zoom-out', 'shake-impact', 'slow-drift']
-  3. soundEffect: optional comedy SFX cue like ['vine-boom', 'record-scratch', 'anime-punch', 'discord-ping', 'choir-epic', 'none']
-  4. subtitles: word-by-word or short energetic phrases for dynamic kinetic captions.
-  5. durationSeconds: estimated speaking duration (usually 4 to 8 seconds).`;
+  1. title: punchy scene title.
+  2. detectedDialogue: transcription of text bubbles/signs read from the image.
+  3. commentary: 1-3 punchy, hilarious spoken lines (approx 4 to 10 seconds of speaking time).
+  4. suggestedCamera: one of ['pan-down', 'crash-zoom', 'pan-right', 'zoom-in', 'zoom-out', 'shake-impact', 'slow-drift'].
+  5. soundEffect: optional comedy SFX cue like ['vine-boom', 'record-scratch', 'anime-punch', 'discord-ping', 'choir-epic', 'none'].
+  6. subtitles: word-by-word or short energetic phrases for dynamic kinetic captions.
+  7. durationSeconds: estimated speaking duration (usually 4 to 8 seconds).`;
 
-    const contents = `Create an engaging recap script for Chapter: "${chapterTitle}" (${genre}).
+    let response;
+
+    // If multimodal images are provided, send them directly to Gemini Flash Vision
+    if (Array.isArray(images) && images.length > 0) {
+      const parts: any[] = [];
+      const limitedImages = images.slice(0, 16);
+
+      limitedImages.forEach((img: any, idx: number) => {
+        parts.push({ text: `--- MANHWA PANEL ${idx + 1} IMAGE ---` });
+        parts.push({
+          inlineData: {
+            mimeType: img.mimeType || 'image/jpeg',
+            data: (img.base64 || img).replace(/^data:image\/[a-z]+;base64,/, ''),
+          },
+        });
+      });
+
+      parts.push({
+        text: `Carefully study these ${limitedImages.length} sequential manhwa panel images.
+Chapter Title: "${sanitizedTitle}"
+Genre: ${genre}
+Tone: ${tone}
+User Notes: ${userNotes || 'Recap accurately based on visual action and dialogue bubbles'}
+
+MANDATORY INSTRUCTIONS:
+1. READ ALL SPEECH BUBBLES, SYSTEM WINDOWS (e.g. quests, levels, EXP), AND SIGNS in each image (OCR) into "detectedDialogue".
+2. STUDY WHAT IS ACTUALLY HAPPENING: character expressions, monsters, blue glowing auras, dual daggers, corridors, status notifications.
+3. ZERO GENERIC FLUFF: Do NOT repeat "F-rank cleaner", "dustpan", or "bed necromancer" tropes.
+4. In "commentary": write unique, tailored voiceover commentary for EACH panel matched to what is drawn in that specific frame.
+
+Return a valid JSON array of ${limitedImages.length} panel objects:
+[
+  {
+    "title": "Scene title",
+    "detectedDialogue": "Exact text from speech bubbles or system screens in this image",
+    "commentary": "Unique spoken voiceover line retelling this specific image",
+    "suggestedCamera": "crash-zoom" | "pan-down" | "slow-drift" | "pan-right",
+    "soundEffect": "vine-boom" | "anime-punch" | "record-scratch" | "none",
+    "durationSeconds": 5.0
+  }
+]`
+      });
+
+      response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: { parts },
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: 'application/json',
+        },
+      });
+    } else {
+      // Text-only mode fallback
+      const contents = `Create an engaging recap script for Chapter: "${sanitizedTitle}" (${genre}).
 Tone: ${tone}
 User Notes: ${userNotes}
 Number of panels: ${panelDescriptions.length || 6}
 Panel details:
 ${panelDescriptions.map((desc: string, i: number) => `Panel ${i + 1}: ${desc}`).join('\n')}
 
+DO NOT default to "F-Rank cleaner", "dustpan", or "bed necromancer" stories. Base commentary on the panel details provided.
 Return a valid JSON array of panel scripts.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents,
-      config: {
-        systemInstruction: systemPrompt,
-        responseMimeType: 'application/json',
-      },
-    });
+      response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents,
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: 'application/json',
+        },
+      });
+    }
 
     const jsonText = response.text || '[]';
     const parsed = JSON.parse(jsonText);
-    res.json({ success: true, panels: parsed });
+    const panelsList = Array.isArray(parsed) ? parsed : (parsed.panels || []);
+    res.json({ success: true, panels: panelsList });
   } catch (error: any) {
     console.error('Error generating script:', error);
     res.status(500).json({ 
@@ -103,65 +171,41 @@ Return a valid JSON array of panel scripts.`;
 const ttsCache = new Map<string, string>();
 let ttsQuotaCooldownUntil = 0;
 
-// High-quality procedural speech WAV generator used as instant fallback when Free Tier quota (3 RPM) is hit
-function generateProceduralSpeechWav(text: string, voice = 'Puck'): string {
-  const sampleRate = 24000;
-  const words = text.split(/\s+/).filter(Boolean);
-  const dur = Math.max(2.0, Math.min(8.5, words.length * 0.38));
-  const totalSamples = Math.floor(sampleRate * dur);
-  const buffer = Buffer.alloc(44 + totalSamples * 2);
-
-  // WAV Header (44 bytes)
-  buffer.write('RIFF', 0);
-  buffer.writeUInt32LE(36 + totalSamples * 2, 4);
-  buffer.write('WAVE', 8);
-  buffer.write('fmt ', 12);
-  buffer.writeUInt32LE(16, 16);
-  buffer.writeUInt16LE(1, 20); // Audio format 1 = PCM
-  buffer.writeUInt16LE(1, 22); // Mono
-  buffer.writeUInt32LE(sampleRate, 24);
-  buffer.writeUInt32LE(sampleRate * 2, 28); // Byte rate
-  buffer.writeUInt16LE(2, 32); // Block align
-  buffer.writeUInt16LE(16, 34); // 16-bit
-  buffer.write('data', 36);
-  buffer.writeUInt32LE(totalSamples * 2, 40);
-
-  // Voice Persona Base Frequencies
-  const baseFreqs: Record<string, number> = {
-    Puck: 165,
-    Fenrir: 110,
-    Zephyr: 195,
-    Kore: 220,
-    Charon: 95,
-  };
-  const pitchBase = baseFreqs[voice] || 165;
-
-  const numSyllables = Math.max(3, Math.round(words.length * 1.55));
-  const sylDuration = dur / numSyllables;
-
-  for (let i = 0; i < totalSamples; i++) {
-    const t = i / sampleRate;
-    const sylIndex = Math.floor(t / sylDuration);
-    const sylT = (t % sylDuration) / sylDuration;
-    // Bell curve amplitude envelope per syllable
-    const sylEnv = Math.sin(Math.PI * Math.min(1, Math.max(0, sylT)));
-
-    // Modulated fundamental with speech-like intonation contours
-    const f0 = pitchBase + Math.sin(sylIndex * 1.6) * 22 + Math.sin(t * 7.5) * 8;
-    const osc1 = Math.sin(2 * Math.PI * f0 * t);
-    const osc2 = Math.sin(2 * Math.PI * (f0 * 2.05) * t) * 0.42;
-    const osc3 = Math.sin(2 * Math.PI * (f0 * 3.1) * t) * 0.22;
-    const voiceTone = (osc1 + osc2 + osc3) * Math.pow(sylEnv, 1.2);
-
-    const sampleVal = Math.max(-0.95, Math.min(0.95, voiceTone * 0.65));
-    const intVal = Math.floor(sampleVal * 32767);
-    buffer.writeInt16LE(intVal, 44 + i * 2);
+// Helper to wrap raw 24kHz 16-bit mono PCM into a standard 44-byte RIFF WAV container
+function wrapPcmWithWavHeader(pcmBuffer: Buffer, sampleRate = 24000, channels = 1, bitsPerSample = 16): Buffer {
+  // Check if buffer already has a RIFF WAV header (starts with 'RIFF')
+  if (pcmBuffer.length >= 44 && pcmBuffer.toString('ascii', 0, 4) === 'RIFF') {
+    return pcmBuffer;
   }
 
-  return buffer.toString('base64');
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const dataSize = pcmBuffer.length;
+  const header = Buffer.alloc(44);
+
+  // RIFF Chunk
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8);
+
+  // fmt sub-chunk
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16); // subchunk1 size
+  header.writeUInt16LE(1, 20); // PCM format
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+
+  // data sub-chunk
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+
+  return Buffer.concat([header, pcmBuffer]);
 }
 
-// API: Generate Voiceover using Gemini 3.8 Flash Lite TTS with caching & 429 quota protection
+// API: Generate Voiceover using Gemini 3.8 Flash Lite TTS with caching & safe fallback
 app.post('/api/gemini/tts', async (req: Request, res: Response) => {
   try {
     const { 
@@ -171,7 +215,7 @@ app.post('/api/gemini/tts', async (req: Request, res: Response) => {
     } = req.body;
 
     if (!text || typeof text !== 'string') {
-      res.status(400).json({ error: 'Text is required for TTS' });
+      res.status(400).json({ success: false, error: 'Text is required for TTS' });
       return;
     }
 
@@ -189,19 +233,16 @@ app.post('/api/gemini/tts', async (req: Request, res: Response) => {
       return;
     }
 
-    // 2. If currently in quota cooldown period (Free Tier 3 RPM limit), return procedural speech audio
+    // 2. If currently in quota cooldown period (Free Tier limit), tell client to use clean browser voice
     if (Date.now() < ttsQuotaCooldownUntil) {
       const remainingSec = Math.ceil((ttsQuotaCooldownUntil - Date.now()) / 1000);
-      console.log(`[TTS] In Free Tier 3 RPM cooldown (${remainingSec}s remaining). Serving procedural narration.`);
-      const fallbackAudio = generateProceduralSpeechWav(cleanText, voice);
-      ttsCache.set(cacheKey, fallbackAudio);
+      console.log(`[TTS] In Free Tier cooldown (${remainingSec}s remaining). Telling client to use natural browser voice.`);
       res.json({
-        success: true,
-        audioBase64: fallbackAudio,
-        mimeType: 'audio/wav',
-        isFallback: true,
+        success: false,
+        useBrowserVoice: true,
         quotaExceeded: true,
         cooldownSeconds: remainingSec,
+        error: `Gemini TTS quota cooldown (${remainingSec}s remaining). Using natural browser voice.`,
       });
       return;
     }
@@ -212,7 +253,19 @@ app.post('/api/gemini/tts', async (req: Request, res: Response) => {
     try {
       response = await ai.models.generateContent({
         model: 'gemini-3.8-flash-lite-tts',
-        contents: cleanText.slice(0, 500),
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: cleanText.slice(0, 500),
+                speechMetadata: {
+                  style: style || 'Energetic manhwa recap narrator',
+                },
+              },
+            ],
+          },
+        ],
         config: {
           responseModalities: ['AUDIO'],
           speechConfig: {
@@ -225,58 +278,120 @@ app.post('/api/gemini/tts', async (req: Request, res: Response) => {
     } catch (e1: any) {
       console.warn('[TTS] Gemini TTS API warning:', e1.message);
       
-      // If quota exceeded (429 RESOURCE_EXHAUSTED), engage cooldown and return clean procedural speech
+      // If quota exceeded (429 RESOURCE_EXHAUSTED), engage cooldown
       if (e1.message?.includes('429') || e1.message?.includes('RESOURCE_EXHAUSTED') || e1.message?.includes('quota')) {
-        ttsQuotaCooldownUntil = Date.now() + 55000; // 55s cooldown to respect 3 RPM limit
-        const fallbackAudio = generateProceduralSpeechWav(cleanText, voice);
-        ttsCache.set(cacheKey, fallbackAudio);
+        ttsQuotaCooldownUntil = Date.now() + 55000; // 55s cooldown
         res.json({
-          success: true,
-          audioBase64: fallbackAudio,
-          mimeType: 'audio/wav',
-          isFallback: true,
+          success: false,
+          useBrowserVoice: true,
           quotaExceeded: true,
-          message: 'Free tier limit reached (3 RPM). Using fallback comic narration audio.',
+          error: 'Gemini TTS quota reached. Using clean browser speech synthesis.',
         });
         return;
       }
       throw e1;
     }
 
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (!base64Audio) {
+    const rawData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!rawData) {
       throw new Error('No audio returned by Gemini TTS');
     }
 
+    // Convert base64 to buffer and ensure valid RIFF WAV header
+    const rawBuffer = Buffer.from(rawData, 'base64');
+    const wavBuffer = wrapPcmWithWavHeader(rawBuffer, 24000, 1, 16);
+    const finalBase64 = wavBuffer.toString('base64');
+
     // Cache successful audio
-    ttsCache.set(cacheKey, base64Audio);
+    ttsCache.set(cacheKey, finalBase64);
 
     res.json({
       success: true,
-      audioBase64: base64Audio,
+      audioBase64: finalBase64,
       mimeType: 'audio/wav',
     });
   } catch (error: any) {
-    console.warn('[TTS] Generating fallback procedural audio due to error:', error.message);
-    const fallbackAudio = generateProceduralSpeechWav(req.body?.text || 'Manhwa panel recap', req.body?.voice || 'Puck');
+    console.warn('[TTS] Gemini TTS unavailable:', error.message);
+    // Never send synthetic oscillator noise. Tell client to use clean browser voice.
     res.json({
-      success: true,
-      audioBase64: fallbackAudio,
-      mimeType: 'audio/wav',
-      isFallback: true,
-      error: error.message,
+      success: false,
+      useBrowserVoice: true,
+      error: error.message || 'TTS generation unavailable',
     });
   }
 });
 
-// API: Analyze multiple manhwa panels/PDF pages and generate complete sequenced recap
+// API: Auto-detect manhwa premise, characters, and chapter context from sample images
+app.post('/api/gemini/detect-premise', async (req: Request, res: Response) => {
+  try {
+    const { images = [] } = req.body;
+    if (!images || images.length === 0) {
+      res.status(400).json({ error: 'At least one image is required to detect premise.' });
+      return;
+    }
+
+    const ai = getAiClient();
+    const parts: any[] = [];
+    const sampleImages = images.slice(0, 4);
+
+    sampleImages.forEach((img: any, idx: number) => {
+      parts.push({ text: `[SAMPLE PAGE ${idx + 1}]` });
+      parts.push({
+        inlineData: {
+          mimeType: img.mimeType || 'image/jpeg',
+          data: (img.base64 || img).replace(/^data:image\/[a-z]+;base64,/, ''),
+        },
+      });
+    });
+
+    parts.push({
+      text: `Analyze these sample manhwa pages carefully.
+Look at:
+1. All speech bubbles, thought balloons, signs, and title text (transcribe or translate Korean/English).
+2. The protagonist (hair color, clothing, expressions, weapons, class/role).
+3. The setting (modern dungeon, medieval fantasy, murim/martial arts, academy, sci-fi).
+4. The key conflict or plot happening in these specific pictures.
+
+Return a valid JSON object:
+{
+  "detectedTitle": "Likely or creative title for this manhwa/chapter",
+  "genre": "e.g. Action Fantasy Hunter, Murim Comedy, Villainess Otome, Dungeon Crawl",
+  "premise": "2-3 sentences explaining exactly what this manhwa is about based on the visual art and dialogue bubbles",
+  "protagonist": "Description of the main character (appearance, role, demeanor)",
+  "characters": ["Character 1 name/description", "Character 2 name/description"],
+  "currentSituation": "What is specifically happening in these uploaded pages",
+  "suggestedDirectorTweaks": "Suggested creative tweaks the creator can give to the AI narrator (e.g. 'Focus on the protagonist Kang Jinwoo outsmarting the guild leader; roast the ridiculous weapon proportions; highlight the comedic panic expressions')"
+}`
+    });
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: { parts },
+      config: {
+        systemInstruction: 'You are an elite manhwa vision and lore expert. Accurately identify the real characters, genre, premise, and specific story events directly from the comic artwork and speech bubbles. Never guess generic tropes.',
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    res.json({ success: true, data: parsed });
+  } catch (error: any) {
+    console.error('Error detecting manhwa premise:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to detect manhwa premise' });
+  }
+});
+
+// API: Analyze multiple manhwa panels/PDF pages and generate complete sequenced recap (supports segmented chaining)
 app.post('/api/gemini/generate-chapter-from-images', async (req: Request, res: Response) => {
   try {
     const { 
       images = [], // Array of { base64: string, mimeType?: string }
       chapterTitle = 'Uploaded Manhwa Chapter',
       tone = 'Unhinged Mamoru (Comedic, 4th Wall, Meme-heavy)',
-      userNotes = ''
+      userNotes = '',
+      segmentIndex = 0,
+      totalSegments = 1,
+      previousContext = ''
     } = req.body;
 
     if (!images || !Array.isArray(images) || images.length === 0) {
@@ -286,15 +401,18 @@ app.post('/api/gemini/generate-chapter-from-images', async (req: Request, res: R
 
     const ai = getAiClient();
 
+    // Sanitize title to prevent carrying over sample project tropes
+    const isSampleTitle = /cleaner|dustpan|janitor|necromancer|bed/i.test(chapterTitle);
+    const sanitizedTitle = isSampleTitle ? 'Uploaded Manhwa Chapter' : chapterTitle;
+
     // Prepare multimodal parts: each image labeled with its sequential index
     const parts: any[] = [];
-    
-    // Limit to max 12 images per single multimodal call for speed and reliability
-    const limitedImages = images.slice(0, 12);
+    const limitedImages = images.slice(0, 16);
 
     limitedImages.forEach((img, idx) => {
+      const panelNum = segmentIndex * limitedImages.length + idx + 1;
       parts.push({
-        text: `--- MANHWA PANEL ${idx + 1} OF ${limitedImages.length} ---`
+        text: `--- MANHWA PANEL ${panelNum} (Segment ${segmentIndex + 1}/${totalSegments}, Image ${idx + 1}/${limitedImages.length}) ---`
       });
       parts.push({
         inlineData: {
@@ -308,39 +426,70 @@ app.post('/api/gemini/generate-chapter-from-images', async (req: Request, res: R
 
     const promptText = isSimpleRecap 
       ? `You are a professional YouTube Manhwa Recap narrator in Simple Recap style.
-Examine these ${limitedImages.length} sequential manhwa chapter panels.
-Title/Premise: "${chapterTitle}"
-Tone: Simple Recap (Clean, engaging story summary, NO sound effects, smooth fades, 16:9 widescreen default)
-User Notes: ${userNotes}
+Examine these ${limitedImages.length} sequential manhwa chapter panels (Segment ${segmentIndex + 1} of ${totalSegments}).
+Chapter Title: "${sanitizedTitle}"
+Tone: Simple Recap (Immersive, clean storytelling, NO sound effects, smooth fades, 16:9 widescreen default)
+Story Context Established So Far:
+"${previousContext || 'Beginning of the chapter.'}"
+
+USER DIRECTOR TWEAKS & INSTRUCTIONS:
+"${userNotes || 'Recap accurately based on the panel art and dialogue.'}"
+
+CRITICAL MANDATORY INSTRUCTIONS - ZERO GENERIC PLACEHOLDERS & ZERO HALLUCINATED TROPES:
+1. NEVER mention "F-rank cleaner", "dustpan", "bed necromancer", or unrelated tropes. You are recapping the EXACT story drawn in these images!
+2. READ EVERY SPEECH BUBBLE, THOUGHT BALLOON, SYSTEM WINDOW (such as "SLAY NETHER GHOULS", quest prompts, EXP values, titles), AND SFX (OCR). Transcribe the dialogue into "detectedDialogue".
+3. STUDY THE VISUAL SITUATION: Note what the characters are actually doing (e.g. running in corridors, swinging daggers, radiating blue lightning auras, fighting monsters).
+4. In "commentary": 1-3 lines of natural, engaging storytelling directly summarizing that specific image.
+5. In "segmentSummary": A 2-sentence summary of what happened in this segment to maintain continuity for the next segment.
 
 For EACH panel image in order from 1 to ${limitedImages.length}:
-1. "title": Short descriptive title for this scene/panel.
-2. "commentary": 1-3 lines of engaging, clear spoken narration describing the events and character motivations in this panel. Write clean sentences ideal for text-to-speech (TTS) voice generation.
-3. "suggestedCamera": 'slow-drift' or 'pan-down'.
-4. "soundEffect": 'none'.
-5. "transition": 'fade'.
-6. "durationSeconds": Estimated natural speaking duration (between 4.0 and 7.5 seconds).
+{
+  "title": Short descriptive title for this scene/panel,
+  "detectedDialogue": Exact speech bubbles / narration read from the image,
+  "commentary": Spoken voiceover recap line grounded in the art and dialogue,
+  "suggestedCamera": 'slow-drift' or 'pan-down',
+  "soundEffect": 'none',
+  "transition": 'fade',
+  "durationSeconds": Estimated natural speaking duration (between 4.0 and 7.5 seconds)
+}
 
-Return a JSON array containing an object for each panel in matching order.`
-      : `You are @MamoruManhwa, the viral YouTube manhwa recap narrator known for hilarious comedy, speaking as the audience ("Chat, look at this guy"), and breaking the fourth wall.
-Examine these ${limitedImages.length} sequential manhwa chapter panels.
-Title/Premise: "${chapterTitle}"
+Return a valid JSON object:
+{
+  "panels": [...],
+  "segmentSummary": "Summary of this segment's story progression"
+}`
+      : `You are @MamoruManhwa, the iconic viral YouTube manhwa recap narrator known for hilarious comedy, breaking the fourth wall, and speaking directly to the audience ("Chat, look at this guy!").
+Examine these ${limitedImages.length} sequential manhwa chapter panels (Segment ${segmentIndex + 1} of ${totalSegments}).
+Chapter Title: "${sanitizedTitle}"
 Tone: ${tone}
-User Notes: ${userNotes}
+Story Context Established So Far:
+"${previousContext || 'Beginning of the chapter.'}"
+
+USER DIRECTOR TWEAKS & INSTRUCTIONS:
+"${userNotes || 'Roast the tropes and commentary on the art.'}"
+
+CRITICAL MANDATORY INSTRUCTIONS - ZERO GENERIC PLACEHOLDERS & ZERO HALLUCINATED TROPES:
+1. NEVER mention "F-rank cleaner", "dustpan", "bed necromancer", or copy unrelated sample stories! Study the SPECIFIC characters, monsters (e.g. Nether Ghouls), glowing auras, weapons, and dialogue in each picture!
+2. READ EVERY SPEECH BUBBLE, THOUGHT BALLOON, SYSTEM WINDOW, QUEST OBJECTIVE, AND SFX (OCR). Transcribe what is said into "detectedDialogue".
+3. IN "commentary": Write 1-3 punchy, hilarious, unhinged lines reacting directly to what is happening in this specific panel. Talk to the audience ("Chat, look at bro's face right now", "Bro is charging at nether ghouls with dual daggers like he's him!").
+4. In "segmentSummary": A 2-sentence summary of what happened in this segment to pass to the next segment.
 
 For EACH panel image in order from 1 to ${limitedImages.length}:
-1. "title": Short punchy title for this scene/panel (e.g., "The Trash Awakening", "Demon Lord Nap Time", "Broken Dustpan Reveal").
-2. "commentary": 1-3 lines of hilarious 4th-wall commentary reacting to the art, characters, and dialogue in this specific panel. Speak like you are in a live stream with the viewers ("Chat, bro really thought...", "Wait, why does his sword look like a surfboard?", "The artist definitely drew this with their left foot").
-3. "suggestedCamera": One of ['crash-zoom', 'pan-down', 'pan-right', 'shake-impact', 'slow-drift', 'zoom-in', 'zoom-out']. 
-   - Use 'crash-zoom' on character reaction faces.
-   - Use 'pan-down' on tall vertical webtoon scroll panels.
-   - Use 'shake-impact' on attack hits or punchlines.
-   - Use 'pan-right' on action slashes.
-4. "soundEffect": One of ['vine-boom', 'record-scratch', 'anime-punch', 'discord-ping', 'level-up', 'choir-epic', 'crickets', 'none'].
-5. "transition": One of ['white-flash', 'glitch', 'fade', 'zoom-blur', 'slide-left'].
-6. "durationSeconds": Estimated natural speaking duration (between 4.0 and 7.5 seconds).
+{
+  "title": Short punchy comedic title for this scene,
+  "detectedDialogue": Exact speech bubbles / narration read from the image,
+  "commentary": Hilarious 4th-wall commentary reacting to the characters and artwork,
+  "suggestedCamera": One of ['crash-zoom', 'pan-down', 'pan-right', 'shake-impact', 'slow-drift', 'zoom-in', 'zoom-out'],
+  "soundEffect": One of ['vine-boom', 'record-scratch', 'anime-punch', 'discord-ping', 'level-up', 'choir-epic', 'crickets', 'none'],
+  "transition": One of ['white-flash', 'glitch', 'fade', 'zoom-blur', 'slide-left'],
+  "durationSeconds": Estimated natural speaking duration (between 4.0 and 7.5 seconds)
+}
 
-Return a JSON array containing an object for each panel in matching order.`;
+Return a valid JSON object:
+{
+  "panels": [...],
+  "segmentSummary": "Summary of this segment's story progression"
+}`;
 
     parts.push({ text: promptText });
 
@@ -348,15 +497,198 @@ Return a JSON array containing an object for each panel in matching order.`;
       model: 'gemini-3.8-flash',
       contents: { parts },
       config: {
+        systemInstruction: 'You are an elite manhwa vision and dialogue analyzer. Always read speech bubbles and text in images with high OCR accuracy and ground all scripts in the actual character dialogue. Never output generic template lines.',
         responseMimeType: 'application/json',
       },
     });
 
-    const parsed = JSON.parse(response.text || '[]');
-    res.json({ success: true, panels: parsed });
+    const parsed = JSON.parse(response.text || '{}');
+    const panelsList = Array.isArray(parsed) ? parsed : (parsed.panels || []);
+    const segmentSummary = parsed.segmentSummary || '';
+
+    res.json({ success: true, panels: panelsList, segmentSummary });
   } catch (error: any) {
     console.error('Error generating chapter from images:', error);
     res.status(500).json({ success: false, error: error.message || 'Failed to process manhwa images' });
+  }
+});
+
+// API: Analyze a single panel image, read its speech bubbles with OCR, and generate matched voiceover
+app.post('/api/gemini/analyze-panel', async (req: Request, res: Response) => {
+  try {
+    const { 
+      imageBase64, 
+      chapterTitle = 'Manhwa Chapter', 
+      tone = 'Simple Recap (Clean storytelling, no SFX)', 
+      context = '' 
+    } = req.body;
+
+    if (!imageBase64) {
+      res.status(400).json({ error: 'imageBase64 is required.' });
+      return;
+    }
+
+    const isSampleTitle = /cleaner|dustpan|janitor|necromancer|bed/i.test(chapterTitle);
+    const sanitizedTitle = isSampleTitle ? 'Current Manhwa Chapter' : chapterTitle;
+
+    const ai = getAiClient();
+    const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+    const isSimple = tone.toLowerCase().includes('simple');
+
+    const prompt = `You are an expert manhwa recap director and voiceover writer.
+Carefully examine this manhwa comic panel image.
+Title / Context: "${sanitizedTitle}" - ${context}
+Style: ${isSimple ? 'Simple Recap (Clean story summary, no sound effects, TTS-ready lines)' : 'Mamoru Style (Comedic 4th wall roast)'}
+
+MANDATORY INSTRUCTIONS - ZERO GENERIC TROPES:
+1. READ ALL SPEECH BUBBLES, thought balloons, narration boxes, signs, and system message screens visible in this image (e.g. quest alerts, level windows, names, numbers).
+2. DO NOT mention "F-rank cleaner", "dustpan", or "bed necromancer" unless that is literally what is drawn in this image.
+3. In "detectedDialogue": Transcribe the exact text from the speech bubbles and narration boxes.
+4. In "commentary": Write a 1-3 line voiceover recap script that summarizes this panel BASED DIRECTLY ON what the characters are saying and doing in the image.
+5. In "title": Short punchy title for this scene.
+6. In "suggestedCamera": ${isSimple ? "'slow-drift' or 'pan-down'" : "'crash-zoom' | 'pan-down' | 'pan-right' | 'shake-impact' | 'slow-drift'"}.
+7. In "soundEffect": ${isSimple ? "'none'" : "'none' | 'vine-boom' | 'record-scratch' | 'anime-punch' | 'discord-ping' | 'level-up'"}.
+8. In "durationSeconds": Estimated natural speaking duration (between 4.0 and 7.5s).
+
+Return a valid JSON object:
+{
+  "title": string,
+  "detectedDialogue": string,
+  "commentary": string,
+  "suggestedCamera": string,
+  "soundEffect": string,
+  "durationSeconds": number
+}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: [
+        {
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: cleanBase64,
+          },
+        },
+        { text: prompt },
+      ],
+      config: {
+        systemInstruction: 'You are an expert manhwa vision and dialogue analyzer. Always read speech bubbles and text in images with high OCR accuracy and ground all scripts in the actual character dialogue.',
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    res.json({ success: true, data: parsed });
+  } catch (error: any) {
+    console.error('Error analyzing panel:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to analyze panel image' });
+  }
+});
+
+// API: Analyze the visual complexity of panels to suggest matched dialogue duration and voiceover pacing
+app.post('/api/gemini/analyze-visual-complexity', async (req: Request, res: Response) => {
+  try {
+    const {
+      panels = [],
+      chapterTitle = 'Manhwa Chapter',
+      tone = 'Simple Recap (Clean storytelling, no SFX)',
+    } = req.body;
+
+    if (!Array.isArray(panels) || panels.length === 0) {
+      res.status(400).json({ success: false, error: 'panels array is required.' });
+      return;
+    }
+
+    const ai = getAiClient();
+    const isSimple = tone.toLowerCase().includes('simple');
+
+    // Build multimodal contents for up to 8 panels
+    const slicedPanels = panels.slice(0, 8);
+    const contents: any[] = [];
+
+    slicedPanels.forEach((p: any) => {
+      if (p.imageBase64) {
+        const cleanBase64 = p.imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+        contents.push({
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: cleanBase64,
+          },
+        });
+      }
+    });
+
+    const prompt = `You are an expert anime & manhwa video editor and director specializing in visual pacing, kinetic framing, and voiceover synchronization.
+Examine each attached manhwa panel image in sequential order (total ${slicedPanels.length} images).
+
+Chapter Context: "${chapterTitle}"
+Recap Style: ${isSimple ? 'Clean Narrative Recap' : 'Dynamic Mamoru Style'}
+
+YOUR TASK:
+Analyze the VISUAL COMPLEXITY and FRAME INTENSITY of each panel frame, and calculate the EXACT ideal dialogue duration so the narrator's spoken pacing perfectly matches what the viewer's eye needs to process.
+
+EVALUATION CRITERIA FOR EACH PANEL:
+1. visualComplexityScore (1 to 10):
+   - 1-3: Low complexity (simple reaction face, single character silhouette, minimal background, comedic gag cut).
+   - 4-6: Medium complexity (two-shot dialogue exchange, moderate background details, standard movement).
+   - 7-8: High complexity (combat scene, multiple action lines, spell aura effects, multiple enemies or debris).
+   - 9-10: Extreme complexity (epic double-spread climax, huge magical explosion, intricate status window with lots of text, dense army battle).
+2. complexityLevel: 'low' | 'medium' | 'high' | 'extreme'.
+3. intensityType: 'action-combat' | 'dense-lore' | 'dialogue-heavy' | 'reaction-gag' | 'establishing-shot' | 'dramatic-climax'.
+4. visualDescription: Concise 1-sentence description of the visual scene in the image (actions, characters, auras, bubbles).
+5. suggestedDurationSeconds:
+   - Low complexity: 2.5s to 3.8s (quick punchy beat, avoids dragging).
+   - Medium complexity: 4.0s to 5.2s (standard balanced storytelling).
+   - High complexity: 5.5s to 7.0s (gives time to absorb combat intensity and detail).
+   - Extreme complexity: 7.2s to 8.5s (dramatic climaxes and detailed system screen reveals).
+6. suggestedWordCount: Recommended number of spoken words for the voiceover narrator (calculated at ~2.5 to 2.8 words per second of duration).
+7. pacingRecommendation: Short tag like "Rapid Punch (3.2s)", "Intense Combat (6.5s)", "Dense Lore (5.8s)", "Dramatic Climax (7.5s)", "Snappy Gag (2.8s)".
+8. pacingRationale: Why this duration was chosen based on the visual density of the frame.
+9. suggestedCommentary: 1-2 sentence voiceover narration draft that matches this exact word count and visual tempo.
+10. detectedDialogue: Transcribed text from any speech bubbles or status windows.
+
+Return a valid JSON object with an "analyses" array containing one object per panel in order:
+{
+  "analyses": [
+    {
+      "panelIndex": number,
+      "panelId": string,
+      "visualComplexityScore": number,
+      "complexityLevel": "low" | "medium" | "high" | "extreme",
+      "intensityType": string,
+      "visualDescription": string,
+      "suggestedDurationSeconds": number,
+      "suggestedWordCount": number,
+      "pacingRecommendation": string,
+      "pacingRationale": string,
+      "suggestedCommentary": string,
+      "detectedDialogue": string
+    }
+  ]
+}`;
+
+    contents.push({ text: prompt });
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents,
+      config: {
+        systemInstruction: 'You are an elite video editing director specializing in manhwa visual pacing and frame complexity analysis. Always return precise durations and word counts matched to visual intensity.',
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{"analyses":[]}');
+    const analyses = (parsed.analyses || []).map((a: any, i: number) => ({
+      ...a,
+      panelId: slicedPanels[i]?.id || `panel_${i}`,
+      panelIndex: i,
+    }));
+
+    res.json({ success: true, analyses });
+  } catch (error: any) {
+    console.error('Error analyzing visual complexity:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to analyze visual complexity' });
   }
 });
 
@@ -474,7 +806,9 @@ async function startServer() {
     console.log('\n=======================================================================');
     console.log(`  ManhwaRecap Studio Server is RUNNING!`);
     console.log(`  >>> OPEN IN YOUR BROWSER: http://localhost:${PORT} <<<`);
-    console.log(`  (Windows Notice: Always use 'localhost:3000', do NOT use '0.0.0.0')`);
+    console.log(`  >>> ALTERNATIVE LINK:    http://127.0.0.1:${PORT} <<<`);
+    console.log(`  IMPORTANT: On Windows, use 'http://localhost:${PORT}'`);
+    console.log(`  Do NOT type '0.0.0.0:${PORT}' in Chrome (Windows will show ERR_ADDRESS_INVALID)`);
     console.log('=======================================================================\n');
   });
 }

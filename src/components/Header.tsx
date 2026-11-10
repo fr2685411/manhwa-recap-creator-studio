@@ -6,14 +6,16 @@ import {
   Square, 
   Plus, 
   Flame, 
-  Cpu,
-  Cloud,
-  Server,
-  BookOpen,
-  HelpCircle,
-  Layers,
-  FileText,
-  Zap
+  Cpu, 
+  Cloud, 
+  Server, 
+  BookOpen, 
+  HelpCircle, 
+  Layers, 
+  FileText, 
+  Zap,
+  Columns,
+  Activity
 } from 'lucide-react';
 import { ProjectSettings } from '../types/manhwa';
 import { SAMPLE_PROJECTS } from '../data/sampleChapters';
@@ -51,6 +53,49 @@ export const Header: React.FC<HeaderProps> = ({
     if (sample) {
       onUpdateProject(() => JSON.parse(JSON.stringify(sample)));
     }
+  };
+
+  const handleQuickExportVoiceLinesTxt = () => {
+    let content = `========================================================\n`;
+    content += `MANHWA RECAP STORY SCRIPT: ${project.title || 'Chapter Recap'}\n`;
+    content += `Recap Mode: ${project.recapMode || 'standard'} | Panels: ${project.panels.length}\n`;
+    content += `========================================================\n\n`;
+
+    content += `--- TIMED SCENE-BY-SCENE BREAKDOWN ---\n\n`;
+    let accumulated = 0;
+    project.panels.forEach((p, idx) => {
+      const dur = p.duration / (project.pacingMultiplier || 1.0);
+      const startMin = Math.floor(accumulated / 60);
+      const startSec = Math.floor(accumulated % 60).toString().padStart(2, '0');
+      accumulated += dur;
+      const endMin = Math.floor(accumulated / 60);
+      const endSec = Math.floor(accumulated % 60).toString().padStart(2, '0');
+
+      content += `[PANEL ${idx + 1}] (${startMin}:${startSec} - ${endMin}:${endSec} | ${dur.toFixed(1)}s) - "${p.title}"\n`;
+      if (p.detectedDialogue) {
+        content += `DIALOGUE IN IMAGE: ${p.detectedDialogue}\n`;
+      }
+      content += `VOICEOVER NARRATION:\n"${p.commentary || ''}"\n\n`;
+    });
+
+    content += `\n========================================================\n`;
+    content += `CLEAN TTS LINES (FOR ELEVENLABS / EDGE-TTS / KOKORO):\n`;
+    content += `========================================================\n`;
+    project.panels.forEach((p) => {
+      if (p.commentary && p.commentary.trim()) {
+        content += `${p.commentary.trim()}\n`;
+      }
+    });
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(project.title || 'manhwa_recap').replace(/[^a-zA-Z0-9_-]/g, '_')}_all_voice_lines.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -115,6 +160,15 @@ export const Header: React.FC<HeaderProps> = ({
               <span>Full Script</span>
             </button>
           )}
+
+          <button
+            onClick={handleQuickExportVoiceLinesTxt}
+            className="px-2.5 py-1 text-xs rounded-lg transition-all font-semibold text-blue-300 hover:text-blue-100 hover:bg-blue-600/20 flex items-center gap-1.5 border border-blue-500/30 bg-blue-950/40"
+            title="Export all voice lines and dialogue to a single .txt file"
+          >
+            <Download className="w-3.5 h-3.5 text-blue-400" />
+            <span>Export Lines (.txt)</span>
+          </button>
         </div>
       </div>
 
@@ -211,6 +265,54 @@ export const Header: React.FC<HeaderProps> = ({
             <span>1:1</span>
           </button>
         </div>
+
+        {/* 16:9 Double Slide Slideshow Toggle (Dual Panels like YouTube Manhwa Recaps) */}
+        {project.aspectRatio === '16:9' && (
+          <div className="hidden sm:flex items-center gap-1 bg-zinc-900/90 p-1 rounded-xl border border-zinc-800">
+            <button
+              onClick={() => onUpdateProject((p) => ({ ...p, widescreenLayout: 'double-slide' }))}
+              title="Double Slide Mode: 2 panels side-by-side with blurred ambient background (like popular YouTube Manhwa recaps)"
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                project.widescreenLayout === 'double-slide' || (!project.widescreenLayout && project.recapMode === 'simple')
+                  ? 'bg-blue-500/25 text-blue-300 border border-blue-500/40 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Columns className="w-3.5 h-3.5 text-blue-400" />
+              <span>Double Slide (16:9)</span>
+            </button>
+            <button
+              onClick={() => onUpdateProject((p) => ({ ...p, widescreenLayout: 'single' }))}
+              title="Single Focus Mode: 1 panel centered in widescreen"
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                project.widescreenLayout === 'single'
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Monitor className="w-3.5 h-3.5" />
+              <span>Single Focus</span>
+            </button>
+          </div>
+        )}
+
+        {/* Global Camera Shake Toggle Button */}
+        <button
+          onClick={() => onUpdateProject((p) => ({ ...p, disableShakeEffect: !p.disableShakeEffect }))}
+          title={
+            project.disableShakeEffect
+              ? 'Camera shake is currently DISABLED (Clean smooth panning). Click to enable.'
+              : 'Camera shake is currently ENABLED. Click to remove all camera shaking across the video.'
+          }
+          className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all ${
+            project.disableShakeEffect
+              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-sm'
+              : 'bg-zinc-800/80 text-zinc-400 border-zinc-700 hover:text-zinc-200'
+          }`}
+        >
+          <Activity className={`w-3.5 h-3.5 ${project.disableShakeEffect ? 'text-emerald-400' : 'text-amber-400'}`} />
+          <span>{project.disableShakeEffect ? 'Shake: OFF (Smooth)' : 'Shake: ON'}</span>
+        </button>
 
       {/* Right Actions: Local Model, Auto-Recap, AI Script, Add Panel, 1080p Export */}
       <div className="flex items-center gap-2">

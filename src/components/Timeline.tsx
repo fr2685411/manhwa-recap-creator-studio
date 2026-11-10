@@ -20,9 +20,11 @@ import {
   Mic,
   CheckSquare,
   Square,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Gauge,
+  X
 } from 'lucide-react';
-import { ProjectSettings, Panel, TransitionType, TRANSITION_LIBRARY, TransitionMeta } from '../types/manhwa';
+import { ProjectSettings, Panel, TransitionType, TRANSITION_LIBRARY, TransitionMeta, SoundEffectType } from '../types/manhwa';
 import { audioEngine } from '../services/audioEngine';
 
 interface TimelineProps {
@@ -96,9 +98,92 @@ export const Timeline: React.FC<TimelineProps> = ({
     }
   };
 
-  // Active transition popover state (which panel transition is being edited)
+  // Active transition and SFX popover states
   const [activeTransitionPopoverIndex, setActiveTransitionPopoverIndex] = useState<number | null>(null);
+  const [activeSfxPopoverIndex, setActiveSfxPopoverIndex] = useState<number | null>(null);
   const [transitionCategoryFilter, setTransitionCategoryFilter] = useState<'all' | 'comic' | 'action' | 'cinematic'>('all');
+  const [isPacingToolsOpen, setIsPacingToolsOpen] = useState(false);
+
+  // Sound Effect Library Options
+  const SFX_OPTIONS: { id: SoundEffectType; name: string; icon: string; desc: string }[] = [
+    { id: 'vine-boom', name: 'Vine Boom', icon: '💥', desc: 'Dramatic bass drop for comedy reveals' },
+    { id: 'anime-punch', name: 'Anime Punch', icon: '🥊', desc: 'Heavy impact blow for combat moments' },
+    { id: 'discord-ping', name: 'Discord Ping', icon: '🔔', desc: 'System window pop notification' },
+    { id: 'record-scratch', name: 'Record Scratch', icon: '💿', desc: 'Freeze frame comedic record stop' },
+    { id: 'level-up', name: 'Level Up', icon: '🌟', desc: 'Satisfying stat increase chime' },
+    { id: 'choir-epic', name: 'Epic Choir', icon: '🏛️', desc: 'Angelic choir for godly moments' },
+    { id: 'crickets', name: 'Crickets Chirp', icon: '🦗', desc: 'Awkward silence / failed roast gag' },
+    { id: 'none', name: 'None (Remove SFX)', icon: '🚫', desc: 'Remove sound effect from this panel' },
+  ];
+
+  // Insert a new panel at specific position (Add element)
+  const insertBlankPanel = (afterIndex: number) => {
+    onUpdateProject((prev) => {
+      const copy = [...prev.panels];
+      const prevPanel = copy[afterIndex] || copy[0];
+      const newPanel: Panel = {
+        id: 'panel_' + Date.now(),
+        title: `Scene #${afterIndex + 2}`,
+        imageUrl: prevPanel?.imageUrl || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800',
+        duration: 4.5,
+        commentary: 'The chapter continues with escalating tension.',
+        camera: {
+          type: 'slow-drift',
+          start: { x: 0.5, y: 0.35, zoom: 1.1 },
+          end: { x: 0.5, y: 0.65, zoom: 1.25 },
+          shakeIntensity: 0,
+          easing: 'ease-in-out',
+        },
+        transition: 'fade',
+        soundEffect: 'none',
+        soundEffectTime: 0.5,
+        subtitles: [],
+      };
+      copy.splice(afterIndex + 1, 0, newPanel);
+      return { ...prev, panels: copy };
+    });
+    onSelectPanel(afterIndex + 1);
+  };
+
+  // Scale all panel durations proportionally (Video Pacing & Duration Control)
+  const scaleAllDurations = (speedMultiplier: number) => {
+    onUpdateProject((prev) => {
+      const updatedPanels = prev.panels.map((p) => {
+        const newDur = Math.max(1.2, Math.min(25, Math.round((p.duration / speedMultiplier) * 10) / 10));
+        return {
+          ...p,
+          duration: newDur,
+          soundEffectTime: Math.min(newDur * 0.9, p.soundEffectTime ? Math.round((p.soundEffectTime / speedMultiplier) * 10) / 10 : 0.5),
+        };
+      });
+      return {
+        ...prev,
+        pacingMultiplier: 1.0, // Durations are baked directly into panel durations!
+        panels: updatedPanels,
+      };
+    });
+  };
+
+  // Set project pacing multiplier (for dynamic playback & export pacing)
+  const setPacingMultiplier = (speed: number) => {
+    onUpdateProject((prev) => ({
+      ...prev,
+      pacingMultiplier: speed,
+    }));
+  };
+
+  // Add / Change / Remove Sound Effect on panel
+  const handleUpdatePanelSoundEffect = (panelIndex: number, sfx: SoundEffectType) => {
+    if (sfx !== 'none') {
+      audioEngine.playSoundEffect(sfx as any);
+    }
+    onUpdateProject((prev) => {
+      const copy = [...prev.panels];
+      copy[panelIndex] = { ...copy[panelIndex], soundEffect: sfx };
+      return { ...prev, panels: copy };
+    });
+    setActiveSfxPopoverIndex(null);
+  };
 
   // Reorder panels
   const movePanel = (index: number, direction: 'left' | 'right') => {
@@ -193,22 +278,25 @@ export const Timeline: React.FC<TimelineProps> = ({
     ? TRANSITION_LIBRARY
     : TRANSITION_LIBRARY.filter(t => t.category === transitionCategoryFilter);
 
+  const currentPacing = project.pacingMultiplier || 1.0;
+  const effectivePacedDuration = totalDuration / currentPacing;
+
   return (
-    <div className="h-60 bg-[#0c0c12] border-t border-zinc-800 flex flex-col select-none overflow-hidden relative">
+    <div className="h-64 bg-[#0c0c12] border-t border-zinc-800 flex flex-col select-none overflow-hidden relative">
       {/* Timeline Header bar */}
-      <div className="h-9 px-4 bg-[#101018] border-b border-zinc-800/80 flex items-center justify-between text-xs text-zinc-400">
-        <div className="flex items-center gap-4">
-          <span className="font-bold text-zinc-300 flex items-center gap-1.5">
+      <div className="h-10 px-4 bg-[#101018] border-b border-zinc-800/80 flex items-center justify-between text-xs text-zinc-400 gap-3">
+        <div className="flex items-center gap-3">
+          <span className="font-bold text-zinc-300 flex items-center gap-1.5 shrink-0">
             <Video className="w-3.5 h-3.5 text-amber-400" />
-            RECAP TIMELINE
+            TIMELINE
           </span>
-          <span className="text-[11px] text-zinc-500">
-            {project.panels.length} Panels &bull; Total: {totalDuration.toFixed(1)}s &bull; Auto-Paced
+          <span className="text-[11px] text-zinc-500 hidden sm:inline shrink-0">
+            {project.panels.length} Panels &bull; Total: <strong className="text-zinc-300 font-mono">{effectivePacedDuration.toFixed(1)}s</strong> {currentPacing !== 1.0 && <span className="text-amber-400 font-mono">({currentPacing.toFixed(2)}x)</span>}
           </span>
 
           {/* Multi-Selection Batch Bar */}
           {activeSelectedIndices.length > 1 && (
-            <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-lg animate-in fade-in">
+            <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-lg animate-in fade-in shrink-0">
               <span className="text-[10px] font-bold text-amber-300 flex items-center gap-1">
                 <CheckSquare className="w-3 h-3 text-amber-400" />
                 {activeSelectedIndices.length} Selected
@@ -236,12 +324,60 @@ export const Timeline: React.FC<TimelineProps> = ({
           )}
         </div>
 
+        {/* Video Pacing & Duration Speed Controller */}
+        <div className="flex items-center gap-1.5 bg-black/60 border border-zinc-800 rounded-xl px-2 py-0.5">
+          <span className="text-[10px] font-bold text-zinc-400 flex items-center gap-1 shrink-0">
+            <Gauge className="w-3 h-3 text-amber-400" />
+            <span className="hidden md:inline">PACING:</span>
+          </span>
+
+          {/* Preset speed toggles */}
+          <div className="flex items-center gap-0.5">
+            {[
+              { spd: 0.8, icon: '🐢', label: 'Slow & Detailed' },
+              { spd: 1.0, icon: '⚖️', label: 'Standard' },
+              { spd: 1.25, icon: '⚡', label: 'Fast-Paced' },
+              { spd: 1.5, icon: '🚀', label: 'Rush' },
+            ].map((p) => {
+              const isActive = Math.abs(currentPacing - p.spd) < 0.05;
+              return (
+                <button
+                  key={p.spd}
+                  onClick={() => setPacingMultiplier(p.spd)}
+                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${
+                    isActive
+                      ? 'bg-amber-400 text-black shadow-sm font-black'
+                      : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                  }`}
+                  title={`${p.label} (${p.spd}x pacing)`}
+                >
+                  <span>{p.icon}</span>
+                  <span>{p.spd}x</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Quick Action: Scale All Durations by chosen multiplier */}
+          <button
+            onClick={() => {
+              if (window.confirm(`Scale all panel durations by ${currentPacing}x? This directly alters panel seconds on the timeline.`)) {
+                scaleAllDurations(currentPacing);
+              }
+            }}
+            className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold text-zinc-400 hover:text-amber-300 hover:bg-zinc-800 border border-zinc-700/60 transition-all flex items-center gap-1"
+            title="Permanently bake current pacing multiplier into all panel durations"
+          >
+            <span>⚡ Apply to Seconds</span>
+          </button>
+        </div>
+
         <div className="flex items-center gap-2">
           {/* Batch Adjustment Tool Button */}
           {onOpenBatchModal && (
             <button
               onClick={() => onOpenBatchModal(activeSelectedIndices.length > 0 ? activeSelectedIndices : [selectedPanelIndex])}
-              className="px-2.5 py-1 rounded-lg bg-zinc-800/90 hover:bg-zinc-700/90 text-amber-300 border border-amber-500/30 hover:border-amber-400/50 text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-sm"
+              className="px-2.5 py-1 rounded-lg bg-zinc-800/90 hover:bg-zinc-700/90 text-amber-300 border border-amber-500/30 hover:border-amber-400/50 text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-sm shrink-0"
               title="Open Batch Adjustment Tool to configure Pan & Zoom, Subtitle Styles, and Transitions across multiple panels"
             >
               <Layers className="w-3.5 h-3.5 text-amber-400" />
@@ -251,7 +387,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
           <button
             onClick={onOpenUploadModal}
-            className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold flex items-center gap-1 transition-all"
+            className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold flex items-center gap-1 transition-all shrink-0"
           >
             <Plus className="w-3 h-3 text-amber-400" />
             <span>Add Panel</span>
@@ -323,16 +459,16 @@ export const Timeline: React.FC<TimelineProps> = ({
                       </span>
                     </div>
 
-                    {/* Actions on hover */}
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* Card Actions: Move, Duplicate, Remove (always visible and prominent) */}
+                    <div className="flex items-center gap-0.5">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           movePanel(index, 'left');
                         }}
                         disabled={index === 0}
-                        title="Move Left"
-                        className="p-0.5 text-zinc-400 hover:text-white disabled:opacity-20"
+                        title={index === 0 ? "First panel" : "Move Panel Left (⬅️)"}
+                        className="p-1 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white disabled:opacity-20 disabled:hover:bg-zinc-800/80 transition-all"
                       >
                         <ArrowLeft className="w-3 h-3" />
                       </button>
@@ -342,8 +478,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                           movePanel(index, 'right');
                         }}
                         disabled={index === project.panels.length - 1}
-                        title="Move Right"
-                        className="p-0.5 text-zinc-400 hover:text-white disabled:opacity-20"
+                        title={index === project.panels.length - 1 ? "Last panel" : "Move Panel Right (➡️)"}
+                        className="p-1 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white disabled:opacity-20 disabled:hover:bg-zinc-800/80 transition-all"
                       >
                         <ArrowRight className="w-3 h-3" />
                       </button>
@@ -352,8 +488,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                           e.stopPropagation();
                           duplicatePanel(index);
                         }}
-                        title="Duplicate"
-                        className="p-0.5 text-zinc-400 hover:text-amber-400"
+                        title="Duplicate Panel"
+                        className="p-1 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-amber-400 transition-all"
                       >
                         <Copy className="w-3 h-3" />
                       </button>
@@ -363,8 +499,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                             e.stopPropagation();
                             deletePanel(index);
                           }}
-                          title="Delete Panel"
-                          className="p-0.5 text-zinc-400 hover:text-red-400"
+                          title="Remove Panel (🗑️)"
+                          className="p-1 rounded bg-zinc-800/80 hover:bg-red-950/80 text-zinc-400 hover:text-red-400 border border-transparent hover:border-red-800/50 transition-all"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
@@ -372,7 +508,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                     </div>
                   </div>
 
-                  {/* Panel Thumbnail Preview & Camera Type */}
+                  {/* Panel Thumbnail Preview & Camera Type & Sound Effect */}
                   <div className="flex-1 p-1.5 flex items-center gap-2 overflow-hidden">
                     <div className="w-11 h-14 rounded-lg overflow-hidden bg-black/80 border border-zinc-800 flex-shrink-0 relative">
                       <img
@@ -388,11 +524,44 @@ export const Timeline: React.FC<TimelineProps> = ({
                         <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-[9px] font-bold text-amber-400 border border-zinc-700">
                           {p.camera.type.toUpperCase()}
                         </span>
-                        {p.soundEffect !== 'none' && (
-                          <span className="px-1 py-0.2 rounded bg-red-950/80 text-[9px] font-black text-red-300 border border-red-800/60 flex items-center gap-0.5">
-                            <Zap className="w-2.5 h-2.5 text-red-400" />
-                            {p.soundEffect.replace('-', ' ')}
-                          </span>
+
+                        {/* Add / Move / Remove Sound Effect Tag */}
+                        {p.soundEffect !== 'none' ? (
+                          <div className="flex items-center gap-1 bg-red-950/80 text-[9px] font-black text-red-300 border border-red-800/60 rounded px-1.5 py-0.5 shadow-sm">
+                            <Zap className="w-2.5 h-2.5 text-red-400 shrink-0" />
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveSfxPopoverIndex(index);
+                              }}
+                              className="hover:underline truncate max-w-[65px]"
+                              title="Click to change sound effect"
+                            >
+                              {p.soundEffect.replace('-', ' ')}
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleUpdatePanelSoundEffect(index, 'none');
+                              }}
+                              className="hover:text-white text-red-400 font-bold px-0.5 ml-0.5"
+                              title="Remove Sound Effect"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveSfxPopoverIndex(index);
+                            }}
+                            className="px-1.5 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700 text-[9px] font-bold text-zinc-400 hover:text-amber-300 border border-zinc-700/60 flex items-center gap-0.5 transition-all"
+                            title="Add Sound Effect to this panel"
+                          >
+                            <Plus className="w-2.5 h-2.5 text-amber-400" />
+                            <span>SFX</span>
+                          </button>
                         )}
                       </div>
 
@@ -442,30 +611,56 @@ export const Timeline: React.FC<TimelineProps> = ({
                   </div>
                 </div>
 
-                {/* INTERACTIVE TRANSITION CONNECTOR NODE IN TIMELINE */}
-                {!isLastPanel && (
-                  <div className="relative flex items-center justify-center px-1">
+                {/* INTERACTIVE TRANSITION CONNECTOR NODE & INSERT PANEL BUTTON */}
+                <div className="relative flex flex-col items-center justify-center px-1 gap-1">
+                  {/* Quick Insert Panel Here Button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      insertBlankPanel(index);
+                    }}
+                    title={`+ Insert new panel after #${index + 1}`}
+                    className="w-5 h-5 rounded-full bg-zinc-800/90 hover:bg-amber-400 text-zinc-400 hover:text-black border border-zinc-700 hover:border-amber-300 flex items-center justify-center transition-all shadow text-xs font-bold"
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+
+                  {!isLastPanel && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         setActiveTransitionPopoverIndex(activeTransitionPopoverIndex === index ? null : index);
                       }}
                       title={`Transition to Panel #${index + 2}: ${currentTransition.name} (Click to change)`}
-                      className={`h-9 px-2 rounded-lg border flex items-center gap-1 text-[10px] font-extrabold transition-all shadow-md transform hover:scale-105 ${
+                      className={`h-8 px-2 rounded-lg border flex items-center gap-1 text-[10px] font-extrabold transition-all shadow-md transform hover:scale-105 ${
                         activeTransitionPopoverIndex === index
                           ? 'bg-amber-400 text-black border-amber-300 ring-2 ring-amber-400/50 scale-105'
                           : 'bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 border-zinc-700/80 hover:border-amber-400/60'
                       }`}
                     >
-                      <span className="text-sm">{currentTransition.icon}</span>
-                      <span className="hidden sm:inline">{currentTransition.name}</span>
-                      <ChevronDown className="w-3 h-3 opacity-70" />
+                      <span className="text-xs">{currentTransition.icon}</span>
+                      <span className="hidden sm:inline">{currentTransition.name.split(' ')[0]}</span>
+                      <ChevronDown className="w-2.5 h-2.5 opacity-70" />
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </React.Fragment>
             );
           })}
+
+          {/* Quick Append Panel Card at end of timeline */}
+          <div
+            onClick={() => insertBlankPanel(project.panels.length - 1)}
+            className="rounded-xl border-2 border-dashed border-zinc-700/80 hover:border-amber-400 bg-zinc-900/30 hover:bg-amber-950/20 text-zinc-400 hover:text-amber-300 cursor-pointer flex flex-col items-center justify-center gap-1 transition-all p-3 flex-shrink-0"
+            style={{ width: '130px', height: '115px' }}
+            title="Click to add another panel to end of recap"
+          >
+            <div className="w-8 h-8 rounded-full bg-zinc-800 group-hover:bg-amber-400/20 flex items-center justify-center text-amber-400 border border-zinc-700">
+              <Plus className="w-4 h-4" />
+            </div>
+            <span className="text-[11px] font-bold mt-1 text-zinc-300">Add Panel</span>
+            <span className="text-[9px] text-zinc-500">#{project.panels.length + 1}</span>
+          </div>
         </div>
 
         {/* Track 2: Professional Audio & Voiceover Timeline Track */}
@@ -684,6 +879,94 @@ export const Timeline: React.FC<TimelineProps> = ({
                   <span>Apply Effect to All Panels</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SFX QUICK-PICKER POPOVER MODAL */}
+      {activeSfxPopoverIndex !== null && (
+        <div 
+          className="absolute inset-0 z-40 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setActiveSfxPopoverIndex(null)}
+        >
+          <div 
+            className="bg-[#12121e] border border-zinc-700/80 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Popover Header */}
+            <div className="p-3.5 px-5 bg-[#161626] border-b border-zinc-800 flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-extrabold text-white text-sm font-['Cabinet_Grotesk'] flex items-center gap-1.5">
+                    <Zap className="w-4 h-4 text-amber-400" />
+                    SOUND EFFECT SELECTOR
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[10px] font-black border border-amber-500/30">
+                    PANEL #{activeSfxPopoverIndex + 1}
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-400 mt-0.5">
+                  Pick a sound effect or remove it from this panel
+                </p>
+              </div>
+
+              <button
+                onClick={() => setActiveSfxPopoverIndex(null)}
+                className="w-7 h-7 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white flex items-center justify-center transition-all"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* SFX Grid */}
+            <div className="p-4 grid grid-cols-2 gap-2 overflow-y-auto max-h-72">
+              {SFX_OPTIONS.map((sfx) => {
+                const isCurrent = project.panels[activeSfxPopoverIndex]?.soundEffect === sfx.id;
+
+                return (
+                  <button
+                    key={sfx.id}
+                    onClick={() => handleUpdatePanelSoundEffect(activeSfxPopoverIndex, sfx.id)}
+                    className={`p-2.5 rounded-xl border text-left transition-all flex items-start gap-2.5 group ${
+                      isCurrent
+                        ? 'border-amber-400 bg-amber-500/15 shadow-md shadow-amber-500/10 ring-1 ring-amber-400/40'
+                        : sfx.id === 'none'
+                        ? 'border-zinc-800/80 bg-red-950/20 hover:border-red-700/60'
+                        : 'border-zinc-800 bg-zinc-900/70 hover:border-zinc-700 hover:bg-zinc-800/60'
+                    }`}
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-black/60 border border-zinc-700/60 flex items-center justify-center text-lg flex-shrink-0 group-hover:scale-110 transition-transform">
+                      {sfx.icon}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="font-extrabold text-white text-xs">{sfx.name}</span>
+                        {isCurrent && (
+                          <span className="text-amber-400 text-[9px] font-bold">Active</span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-zinc-400 mt-0.5 line-clamp-1">
+                        {sfx.desc}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Popover Footer */}
+            <div className="p-3 px-5 bg-[#141422] border-t border-zinc-800 flex items-center justify-between text-xs">
+              <span className="text-zinc-500 text-[11px]">
+                Clicking an SFX plays audio preview immediately
+              </span>
+              <button
+                onClick={() => handleUpdatePanelSoundEffect(activeSfxPopoverIndex, 'none')}
+                className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold transition-all"
+              >
+                Clear SFX
+              </button>
             </div>
           </div>
         </div>

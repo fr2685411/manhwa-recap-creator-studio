@@ -47,11 +47,22 @@ export default function App() {
 
   // Handle new panels from upload or slicer
   const handleAddPanels = (newPanels: Panel[]) => {
-    setProject((prev) => ({
-      ...prev,
-      panels: [...prev.panels, ...newPanels],
-    }));
-    setSelectedPanelIndex(project.panels.length);
+    setProject((prev) => {
+      const isDefaultSample = /cleaner|dustpan|janitor|necromancer|bed/i.test(prev.title);
+      // If user uploads their own images while on the initial demo sample, replace the demo panels & title!
+      if (isDefaultSample) {
+        return {
+          ...prev,
+          title: `Uploaded Chapter (${newPanels.length} Panels)`,
+          panels: newPanels,
+        };
+      }
+      return {
+        ...prev,
+        panels: [...prev.panels, ...newPanels],
+      };
+    });
+    setSelectedPanelIndex(0);
   };
 
   // Handle applied AI generated script
@@ -148,6 +159,8 @@ export default function App() {
             title: title || prev.title,
             bgmTrack: bgmTrack || prev.bgmTrack,
             panels: newPanels,
+            aspectRatio: '16:9',
+            widescreenLayout: 'double-slide',
           }));
           setCurrentTime(0);
           setSelectedPanelIndex(0);

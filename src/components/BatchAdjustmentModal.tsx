@@ -668,9 +668,20 @@ export const BatchAdjustmentModal: React.FC<BatchAdjustmentModalProps> = ({
                       <div>
                         <div className="flex items-center justify-between text-[11px] mb-1">
                           <span className="text-zinc-400">Screen Shake Rumble</span>
-                          <span className="font-mono text-amber-400 font-bold">
-                            {cameraShake > 0 ? `${(cameraShake * 100).toFixed(0)}%` : 'None'}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {cameraShake > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setCameraShake(0)}
+                                className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-[10px] font-bold"
+                              >
+                                Set 0% (Remove Shake)
+                              </button>
+                            )}
+                            <span className="font-mono text-amber-400 font-bold">
+                              {cameraShake > 0 ? `${(cameraShake * 100).toFixed(0)}%` : '0% (Smooth)'}
+                            </span>
+                          </div>
                         </div>
                         <input
                           type="range"
